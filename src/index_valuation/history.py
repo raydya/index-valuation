@@ -6,11 +6,13 @@ from bisect import bisect_right
 from collections import Counter
 from datetime import date, datetime, timedelta
 from datetime import time as clock_time
+from itertools import combinations
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from index_valuation.archive import json_text
 from index_valuation.domain import DataError, IndexSpec, SourceError
+from index_valuation.index_series import pe_reference_keys
 from index_valuation.quality import compare_value
 
 log = logging.getLogger(__name__)
@@ -78,6 +80,9 @@ class HistoricalBackfill:
         *,
         supplementary_metrics: tuple[str, ...] = (),
         price_supplement_factory=None,
+        calendar_source=None,
+        calendar_fallback_factory=None,
+        additional_sources=(),
     ):
         self.repository = repository
         self.primary_factory = primary_factory
@@ -86,6 +91,9 @@ class HistoricalBackfill:
         self.output_dir = output_dir
         self.supplementary_metrics = supplementary_metrics
         self.price_supplement_factory = price_supplement_factory
+        self.calendar_source = calendar_source
+        self.calendar_fallback_factory = calendar_fallback_factory
+        self.additional_sources = additional_sources
 
     def run(
         self,
@@ -118,7 +126,11 @@ class HistoricalBackfill:
                 "name": spec.name,
                 "start": start,
                 "end": end,
-                "primary_source": "futu",
+                "primary_source": "futu"
+                if self.primary_factory
+                else spec.valuation_source
+                if spec.valuation_source != "none"
+                else None,
                 "run_id": str(run_id),
                 "sources": {},
                 "quarantined_rows": [],
@@ -143,6 +155,16 @@ class HistoricalBackfill:
             return summary
 
     def _calendar_and_secondary(self, spec, start, end, report):
+        if self.calendar_source is not None:
+            sessions, path = self.calendar_source.trading_days(start, end, market=spec.market)
+            report["trading_calendar"] = {
+                "source": self.calendar_source.source_name,
+                "market": spec.market,
+                "sessions": len(sessions),
+                "artifact_path": path,
+                "cached": False,
+            }
+            return sessions, []
         if self.secondary_factory is None:
             with self.primary_factory() as primary:
                 sessions, path = primary.trading_days(start, end, market=spec.market)
@@ -155,6 +177,12 @@ class HistoricalBackfill:
             }
             return sessions, []
         sessions, secondary_prices = None, []
+        secondary_supported = spec.quote_code.startswith(("SH.", "SZ."))
+        if not secondary_supported:
+            report["sources"]["baostock_price"] = {
+                "status": "unsupported",
+                "reason": "BaoStock requires a supported SH/SZ security code",
+            }
         secondary = self.secondary_factory()
         try:
             with secondary:
@@ -165,7 +193,7 @@ class HistoricalBackfill:
                     "artifact_path": calendar_path,
                     "cached": False,
                 }
-                if sessions:
+                if sessions and secondary_supported:
                     secondary_prices = self._fetch(
                         report, "baostock_price", lambda: secondary.index_history(spec, start, end)
                     )
@@ -179,7 +207,10 @@ class HistoricalBackfill:
                     sessions, calendar_path = secondary.cached_trading_days(start, end)
                 except SourceError:
                     # New daily dates may exceed the historical cache during an outage.
-                    with self.primary_factory() as primary:
+                    fallback = self.calendar_fallback_factory or self.primary_factory
+                    if fallback is None:
+                        raise SourceError("No calendar source covers the requested dates") from None
+                    with fallback() as primary:
                         sessions, calendar_path = primary.trading_days(start, end)
                     calendar_source, cached = "futu", False
                 report["trading_calendar"] = {
@@ -204,7 +235,15 @@ class HistoricalBackfill:
             return
 
         primary_prices, primary_pe, extra_series = [], [], {}
+        if self.primary_factory is None:
+            for key in ("futu_price", "futu_pe"):
+                report["sources"][key] = {
+                    "status": "unsupported",
+                    "reason": "Futu OpenD does not support this index; no ETF substitution",
+                }
         try:
+            if self.primary_factory is None:
+                raise SourceError("Futu OpenD does not support this index; no ETF substitution")
             with self.primary_factory() as primary:
                 primary_prices = self._fetch(
                     report, "futu_price", lambda: primary.index_history(spec, start, end)
@@ -223,8 +262,6 @@ class HistoricalBackfill:
             for key in ("futu_price", "futu_pe"):
                 report["sources"].setdefault(key, {"status": "failed", "error": str(error)})
 
-        official_prices, official_pe = [], []
-        official_name = getattr(self.official_source, "source_name", "csindex")
         datasets = {
             "futu_price": primary_prices,
             "futu_pe": primary_pe,
@@ -232,21 +269,26 @@ class HistoricalBackfill:
         }
         if self.secondary_factory is not None:
             datasets["baostock_price"] = secondary_prices
-        if self.official_source is not None:
+        reference_sources = (
+            (self.official_source,) if self.official_source is not None else ()
+        ) + tuple(self.additional_sources)
+        for source in reference_sources:
+            source_name = source.source_name
+            official_prices, official_pe = [], []
             try:
-                batch = self.official_source.index_history(spec, start, end)
+                batch = source.index_history(spec, start, end)
                 official_prices, official_pe = batch.observations, batch.valuations
                 if batch.failures:
-                    for key in (f"{official_name}_price", f"{official_name}_pe"):
+                    for key in (f"{source_name}_price", f"{source_name}_pe"):
                         report["sources"][key] = {
                             "status": "partial",
                             "failed_ranges": batch.failures,
                         }
             except Exception as error:
-                for key in (f"{official_name}_price", f"{official_name}_pe"):
+                for key in (f"{source_name}_price", f"{source_name}_pe"):
                     report["sources"][key] = {"status": "failed", "error": str(error)}
-            datasets[f"{official_name}_price"] = official_prices
-            datasets[f"{official_name}_pe"] = official_pe
+            datasets[f"{source_name}_price"] = official_prices
+            datasets[f"{source_name}_pe"] = official_pe
         if self.price_supplement_factory:
             try:
                 with self.price_supplement_factory() as supplement:
@@ -280,20 +322,30 @@ class HistoricalBackfill:
                 row = lookup.get(day)
                 values[key] = (row.price if key.endswith("_price") else row.value) if row else None
             comparisons = {}
-            candidate_pairs = [
-                ("futu_baostock_price", "futu_price", "baostock_price"),
-                (f"futu_{official_name}_price", "futu_price", f"{official_name}_price"),
-                (f"{official_name}_baostock_price", f"{official_name}_price", "baostock_price"),
-                (f"{official_name}_eastmoney_price", f"{official_name}_price", "eastmoney_price"),
-                ("baostock_eastmoney_price", "baostock_price", "eastmoney_price"),
-                ("futu_eastmoney_price", "futu_price", "eastmoney_price"),
-            ]
             pairs = [
-                (name, left, right)
-                for name, left, right in candidate_pairs
-                if left in datasets and right in datasets
+                (f"{left.removesuffix('_price')}_{right}", left, right)
+                for left, right in combinations(
+                    (key for key in datasets if key.endswith("_price")), 2
+                )
             ]
-            pairs.append(("pe_numeric_difference", "futu_pe", f"{official_name}_pe"))
+            primary_pe_name = f"{spec.valuation_source}_pe"
+            reference_names = [
+                f"{source}_pe"
+                for source, _, _ in pe_reference_keys(spec)
+                if f"{source}_pe" in datasets
+            ]
+            # Use the worst available same-day reference, as the derived series does.
+            pe_reference_name = max(
+                reference_names,
+                key=lambda name: (
+                    compare_value(
+                        spec.quote_code, "pe", values.get(primary_pe_name), values.get(name)
+                    ).relative_error
+                    or 0
+                ),
+                default=None,
+            )
+            pairs.append(("pe_numeric_difference", primary_pe_name, pe_reference_name))
             for name, left, right in pairs:
                 check = compare_value(spec.quote_code, name, values.get(left), values.get(right))
                 checks.append(check)
@@ -334,10 +386,13 @@ class HistoricalBackfill:
                     Counter(c.status for c in checks if c.metric == "pe_numeric_difference")
                 ),
                 "pe_basis_status": "unconfirmed",
-                "pe_reference_source": official_name if self.official_source is not None else None,
+                "pe_primary_source": spec.valuation_source,
+                "pe_reference_source": pe_reference_name.removesuffix("_pe")
+                if pe_reference_name
+                else None,
                 "pe_comparison_note": (
                     "Numeric agreement does not verify identical earnings/weight/loss treatment. "
-                    "Futu vendor PE and any independent PE retain separate basis labels."
+                    "Primary vendor PE and independent PE retain separate basis labels."
                 ),
                 "component_recalculation": {
                     "status": "blocked",

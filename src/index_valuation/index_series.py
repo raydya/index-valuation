@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from index_valuation.archive import json_text
 from index_valuation.domain import DataError
+from index_valuation.performance import price_return_summary
 from index_valuation.quality import compare_value
 from index_valuation.valuation import quantile
 
@@ -19,10 +20,90 @@ BASIS_NOTE = (
     "采用富途指数 PE，盈利期、加权及亏损处理尚未完整核实。隐含 EPS = 同日点位 / PE，"
     "单位为指数点；不标为已核实的 TTM EPS。其他来源的参考 PE 独立展示，未混入富途历史序列。"
 )
-PRICE_SOURCES = ("futu", "csindex", "cnindex", "baostock", "eastmoney")
+PRICE_SOURCES = ("futu", "csindex", "cnindex", "fred", "nasdaq", "yahoo", "baostock", "eastmoney")
+
+
+def valuation_profile(spec):
+    if spec.valuation_source == "csindex":
+        return {
+            "source": "csindex",
+            "metric": "pe_ttm",
+            "basis": "csindex_published_rolling_pe",
+            "label": "中证官方滚动 PE",
+            "history_frequency": "daily",
+            "sampling_note": "按中证官方有效日度 PE 计算；其他来源的周采样仅用于同日对照。",
+        }
+    if spec.valuation_source == "danjuan":
+        return {
+            "source": "danjuan",
+            "metric": "pe_ttm",
+            "basis": "danjuan_published_pe_ttm",
+            "label": "雪球基金 PE TTM",
+            "history_frequency": "weekly",
+            "sampling_note": (
+                "历史 PE 为周采样，最新快照每日采集；均值和分位每个已结束自然周"
+                "只取最后一个有效观测，周内不重复计数。"
+            ),
+        }
+    return {
+        "source": spec.valuation_source,
+        "metric": "pe",
+        "basis": "futu_valuation_pe",
+        "label": "富途口径" if spec.valuation_source == "futu" else "待接入指数 PE",
+        "history_frequency": "daily",
+        "sampling_note": "按实际有效日度 PE 计算，不填补缺失值。",
+    }
+
+
+def method_for(spec):
+    return {
+        "futu": METHOD,
+        "csindex": "csindex_index_implied_daily_v1",
+        "danjuan": "danjuan_index_implied_weekly_v1",
+        "none": "index_price_only_v1",
+    }[spec.valuation_source]
+
+
+def basis_note(spec):
+    if spec.valuation_source == "csindex":
+        return (
+            "采用中证指数官方发布的滚动 PE；官方单张注明指数指标按成分的计算用股本计算。"
+            "隐含 EPS = 同日价格指数点位 / 官方 PE，单位为指数点。"
+            "雪球基金 PE 单独对照，盈利、权重及亏损处理的差异尚未完整核实。"
+            "同日 PE 差异超过5%时暂停该日 EPS/band，并排除该 PE 的统计贡献；"
+            "无独立 PE 对照的日期仅作官方口径参考，不混入参考源历史，不填补缺失值。"
+        )
+    if spec.valuation_source == "danjuan":
+        return (
+            "采用雪球基金（蛋卷）发布的指数 PE TTM，官方说明主要取自 Choice。"
+            "加权和亏损处理尚未完整独立核实；隐含 EPS = 同日指数点位 / 该来源 PE，单位为指数点。"
+            "周频历史与每日快照保留原始日期，不向前填充；均值、分位按已结束自然周的最后有效样本计算。"
+            "其他来源 PE 单独对照，口径差异不代表同一盈利定义；未混入主源历史。"
+        )
+    if not spec.futu_supported:
+        return (
+            "Futu OpenD 尚不支持该指数的日线及估值。当前展示指数价格；"
+            "缺少可靠的指数 PE 时，PE、隐含 EPS 和估值带保持为空。"
+            "ETF 价格、基金持仓 PE 和指数点位采用不同口径，不作替代。"
+        )
+    return BASIS_NOTE
+
+
+def pe_reference_keys(spec):
+    """Keep comparison inputs separate from the primary PE's accounting basis."""
+    return {
+        "futu": (("csindex", "pe_ttm", "csindex_published_rolling_pe"),),
+        "csindex": (("danjuan", "pe_ttm", "danjuan_published_pe_ttm"),),
+        "danjuan": (
+            ("multpl", "pe_ttm", "multpl_reported_ttm_current_estimate"),
+            ("gurufocus", "pe", "gurufocus_published_pe_unconfirmed"),
+        ),
+        "none": (),
+    }[spec.valuation_source]
 
 
 def derive_points(spec, observations, valuations):
+    profile = valuation_profile(spec)
     prices, values, value_times = {}, {}, {}
     for row in observations:
         if row.symbol != spec.quote_code or row.currency != spec.currency:
@@ -74,11 +155,29 @@ def derive_points(spec, observations, valuations):
             if any(c.status == "warning" for c in checks)
             else "pass"
         )
-        pe_row = values.get((day, "futu", "pe", "futu_valuation_pe"))
+        pe_row = values.get((day, profile["source"], profile["metric"], profile["basis"]))
         pe = pe_row.value if pe_row and pe_row.value.is_finite() and pe_row.value != 0 else None
-        reference = values.get((day, "csindex", "pe_ttm", "csindex_published_rolling_pe"))
-        pe_check = compare_value(spec.quote_code, "pe", pe, reference.value if reference else None)
+        reference_checks = [
+            (
+                values[(day, *key)],
+                compare_value(spec.quote_code, "pe", pe, values[(day, *key)].value),
+            )
+            for key in pe_reference_keys(spec)
+            if (day, *key) in values
+        ]
+        reference, pe_check = max(
+            reference_checks,
+            key=lambda pair: pair[1].relative_error or Decimal(0),
+            default=(None, compare_value(spec.quote_code, "pe", pe, None)),
+        )
         eps = price / pe if pe is not None and price_status in {"pass", "warning"} else None
+        # Alternative PE is allowed, but a known material discrepancy must not
+        # silently become a valuation band. Keep the raw PE visible for review.
+        pe_usable = not (
+            spec.valuation_source in {"danjuan", "csindex"} and pe_check.status == "error"
+        )
+        if not pe_usable:
+            eps = None
         extras = {}
         for metric in ("pb", "ps"):
             row = values.get((day, "futu", metric, f"futu_valuation_{metric}"))
@@ -91,11 +190,12 @@ def derive_points(spec, observations, valuations):
                 "implied_eps": eps,
                 **extras,
                 "price_source": price_row.source if price_row else None,
-                "pe_source": "futu" if pe is not None else None,
-                "pe_basis": "futu_valuation_pe",
+                "pe_source": profile["source"] if pe is not None else None,
+                "pe_basis": profile["basis"] if pe_row else None,
                 "basis_status": "unconfirmed",
                 "price_status": price_status,
                 "pe_comparison_status": pe_check.status,
+                "pe_usable": pe_usable,
                 "reference_pe": reference.value if reference else None,
                 "reference_pe_source": reference.source if reference else None,
                 "reference_pe_basis": reference.basis if reference else None,
@@ -107,6 +207,17 @@ def derive_points(spec, observations, valuations):
                 "price_artifacts": {key: row.artifact_path for key, row in available.items()},
                 "pe_artifact": pe_row.artifact_path if pe_row else None,
                 "reference_pe_artifact": reference.artifact_path if reference else None,
+                "pe_references": [
+                    {
+                        "source": row.source,
+                        "basis": row.basis,
+                        "pe": row.value,
+                        "status": check.status,
+                        "relative_error": check.relative_error,
+                        "artifact": row.artifact_path,
+                    }
+                    for row, check in reference_checks
+                ],
                 "source_observed_at": max(
                     [r.observed_at for r in available.values()]
                     + ([value_times[day]] if day in value_times else [])
@@ -142,10 +253,18 @@ def build_dashboard(spec, points, *, as_of=None, chart_years=5, history_years=5)
     )
     chart_start = years_before(selected["trade_date"], chart_years)
     history, queue, series = [], deque(), []
+    weekly = valuation_profile(spec)["history_frequency"] == "weekly"
+    pending_week = None
     history_total = Decimal(0)
     latest_bands = None
     for point in eligible:
         day, pe, eps = point["trade_date"], point["pe"], point["implied_eps"]
+        if weekly and pending_week and pending_week[0].isocalendar()[:2] != day.isocalendar()[:2]:
+            old_day, old_pe = pending_week
+            insort(history, old_pe)
+            queue.append((old_day, old_pe))
+            history_total += old_pe
+            pending_week = None
         lower = years_before(day, history_years)
         while queue and queue[0][0] < lower:
             _, old = queue.popleft()
@@ -154,7 +273,7 @@ def build_dashboard(spec, points, *, as_of=None, chart_years=5, history_years=5)
         enough = len(history) >= spec.band_min_observations
         mean_pe = history_total / len(history) if enough else None
         # Earlier PE is useful even on a day whose price / EPS is missing.
-        positive_pe = pe is not None and pe > 0
+        positive_pe = pe is not None and pe > 0 and point.get("pe_usable", True)
         usable_eps = eps is not None and eps > 0 and positive_pe
         quantiles = (
             {str(q): quantile(history, q) for q in QUANTILES}
@@ -201,6 +320,7 @@ def build_dashboard(spec, points, *, as_of=None, chart_years=5, history_years=5)
                             "basis_status",
                             "price_status",
                             "pe_comparison_status",
+                            "pe_usable",
                             "reference_pe",
                             "reference_pe_source",
                             "reference_pe_basis",
@@ -213,9 +333,12 @@ def build_dashboard(spec, points, *, as_of=None, chart_years=5, history_years=5)
             )
         latest_bands = bands
         if positive_pe:
-            insort(history, pe)
-            queue.append((day, pe))
-            history_total += pe
+            if weekly:
+                pending_week = (day, pe)
+            else:
+                insort(history, pe)
+                queue.append((day, pe))
+                history_total += pe
     return {
         "index": {
             "key": spec.key,
@@ -225,9 +348,13 @@ def build_dashboard(spec, points, *, as_of=None, chart_years=5, history_years=5)
             "market": spec.market,
             "currency": spec.currency,
             "band_multiples": spec.band_multiples,
+            "tracking_etfs": spec.tracking_etfs,
+            "description": spec.description,
+            "futu_supported": spec.futu_supported,
+            "valuation": valuation_profile(spec),
         },
-        "method": METHOD,
-        "basis_note": BASIS_NOTE,
+        "method": method_for(spec),
+        "basis_note": basis_note(spec),
         "available_start": points[0]["trade_date"],
         "available_end": points[-1]["trade_date"],
         "available_sessions": len(points),
@@ -236,6 +363,7 @@ def build_dashboard(spec, points, *, as_of=None, chart_years=5, history_years=5)
             (p["trade_date"] for p in reversed(points) if p["implied_eps"] is not None), None
         ),
         "chart_years": chart_years,
+        "price_return": price_return_summary(eligible, chart_start, selected["trade_date"]),
         "history_years": history_years,
         "minimum_history": spec.band_min_observations,
         "selected": {**selected, **latest_bands},
@@ -263,6 +391,7 @@ def series_csv(dashboard):
         "mean_points",
         "percentile",
         "history_years",
+        "history_frequency",
         "history_count",
         "history_span_short",
         "history_start",
@@ -276,6 +405,7 @@ def series_csv(dashboard):
         "reference_pe_source",
         "reference_pe_basis",
         "pe_comparison_status",
+        "pe_usable",
         "pe_relative_error",
         "phase",
     ]
@@ -290,6 +420,7 @@ def series_csv(dashboard):
             {
                 **{k: row.get(k) for k in fields if not k.startswith(("band_", "quantile_"))},
                 "history_years": dashboard["history_years"],
+                "history_frequency": dashboard["index"]["valuation"]["history_frequency"],
                 **{f"band_{m}x": row["fixed"].get(m) for m in multiples},
                 **{f"quantile_{q}": row["quantile_points"].get(str(q)) for q in QUANTILES},
             }
@@ -310,15 +441,17 @@ class IndexSeries:
                 raise DataError("No collected index inputs")
             run_id = self.repository.start_run(spec, points[-1]["trade_date"])
             try:
-                self.repository.save_index_series(spec, METHOD, run_id, points)
+                self.repository.save_index_series(spec, method_for(spec), run_id, points)
                 dashboard = build_dashboard(spec, points, chart_years=0)
                 self.output_dir.mkdir(parents=True, exist_ok=True)
                 path = self.output_dir / f"{spec.key}-index-bands-{points[-1]['trade_date']}.csv"
                 path.write_text(series_csv(dashboard), encoding="utf-8")
                 report = {
                     "mode": "direct_index",
-                    "method": METHOD,
-                    "status": "collected",
+                    "method": method_for(spec),
+                    "status": "collected"
+                    if dashboard["selected"]["implied_eps"] is not None
+                    else "partial",
                     "index": spec.key,
                     "run_id": str(run_id),
                     "first_date": points[0]["trade_date"],
@@ -326,7 +459,7 @@ class IndexSeries:
                     "rows": len(points),
                     "coverage": dashboard["coverage"],
                     "basis_status": "unconfirmed",
-                    "basis_note": BASIS_NOTE,
+                    "basis_note": basis_note(spec),
                     "latest_complete_date": dashboard["latest_complete_date"],
                     "latest": dashboard["selected"],
                     "csv": str(path),
@@ -339,5 +472,5 @@ class IndexSeries:
                     run_id, "failed", {"error": str(error), "mode": "direct_index"}
                 )
                 raise
-            self.repository.finish_run(run_id, "collected", report)
+            self.repository.finish_run(run_id, report["status"], report)
             return report

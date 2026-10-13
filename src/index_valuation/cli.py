@@ -19,15 +19,21 @@ from index_valuation.db import build_engine, database_info
 from index_valuation.domain import DataError, SourceError
 from index_valuation.fundamentals import FundamentalBackfill
 from index_valuation.history import HistoricalBackfill
-from index_valuation.index_series import METHOD as INDEX_METHOD
-from index_valuation.index_series import IndexSeries
+from index_valuation.index_series import IndexSeries, method_for
 from index_valuation.pipeline import Pipeline
 from index_valuation.providers.baostock import BaoStockSource
 from index_valuation.providers.cnindex_history import CNIndexHistory
 from index_valuation.providers.csindex import CSIWeights
 from index_valuation.providers.csindex_history import CSIHistory
+from index_valuation.providers.danjuan_history import DanjuanHistory
 from index_valuation.providers.eastmoney import EastmoneySource
+from index_valuation.providers.fred_history import FredHistory
 from index_valuation.providers.futu import FutuSource
+from index_valuation.providers.gurufocus_valuation import GuruFocusValuation
+from index_valuation.providers.multpl_valuation import MultplValuation
+from index_valuation.providers.nasdaq_history import NasdaqHistory
+from index_valuation.providers.us_calendar import USCalendar
+from index_valuation.providers.yahoo_history import YahooHistory
 from index_valuation.registry import load_indices
 from index_valuation.repository import Repository
 
@@ -203,13 +209,28 @@ def main(argv: list[str] | None = None) -> int:
         )
         results, exit_code = [], 0
         for spec in selected:
-            reference_sources = {"csindex": CSIHistory, "cnindex": CNIndexHistory}
+            reference_sources = {
+                "csindex": CSIHistory,
+                "cnindex": CNIndexHistory,
+                "nasdaq": NasdaqHistory,
+                "yahoo": YahooHistory,
+                "fred": FredHistory,
+                "danjuan": DanjuanHistory,
+                "multpl": MultplValuation,
+                "gurufocus": GuruFocusValuation,
+            }
             reference_source = (
                 reference_sources[spec.reference_history_source](archive, settings.source_timeout)
                 if spec.reference_history_source in reference_sources
                 else None
             )
             history_secondary = secondary_factory if spec.market == "CN" else None
+            history_primary = primary_factory if spec.futu_supported else None
+            calendar_source = USCalendar(archive) if spec.market == "US" else None
+            additional_sources = tuple(
+                reference_sources[name](archive, settings.source_timeout)
+                for name in spec.additional_history_sources
+            )
             if args.command in {"backfill-index", "update-index", "build-index"}:
                 collection = None
                 if args.command != "build-index":
@@ -221,21 +242,29 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     start = args.start or spec.history_start_date or spec.inception_date
                     if args.command == "update-index" and args.start is None:
-                        existing = repository.index_series(spec.key, INDEX_METHOD)
+                        existing = repository.index_series(spec.key, method_for(spec))
                         # An index whose PE was permission-blocked needs its first
                         # complete PE backfill when access becomes available.
-                        if existing and any(row["pe"] is not None for row in existing):
+                        if existing and (
+                            not spec.futu_supported
+                            or any(row["pe"] is not None for row in existing)
+                        ):
                             start = max(start, existing[-1]["trade_date"] - timedelta(days=14))
                     collection = HistoricalBackfill(
                         repository,
-                        primary_factory,
+                        history_primary,
                         history_secondary,
                         reference_source,
                         settings.data_dir / "exports",
                         supplementary_metrics=("PB", "PS"),
-                        price_supplement_factory=lambda: EastmoneySource(
-                            archive, settings.source_timeout
-                        ),
+                        price_supplement_factory=(
+                            lambda: EastmoneySource(archive, settings.source_timeout)
+                        )
+                        if spec.market == "CN" or spec.eastmoney_secid
+                        else None,
+                        calendar_source=calendar_source,
+                        calendar_fallback_factory=primary_factory if spec.market == "CN" else None,
+                        additional_sources=additional_sources,
                     ).run(spec, start, end, allow_today=True)
                 result = IndexSeries(repository, settings.data_dir / "exports").refresh(spec)
                 if collection:
@@ -258,10 +287,13 @@ def main(argv: list[str] | None = None) -> int:
             elif args.command == "backfill-history":
                 result = HistoricalBackfill(
                     repository,
-                    primary_factory,
+                    history_primary,
                     history_secondary,
                     reference_source,
                     settings.data_dir / "exports",
+                    calendar_source=calendar_source,
+                    calendar_fallback_factory=primary_factory if spec.market == "CN" else None,
+                    additional_sources=additional_sources,
                 ).run(spec, args.start, args.end)
             elif args.command == "backfill-fundamentals":
                 result = FundamentalBackfill(

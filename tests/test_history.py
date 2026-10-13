@@ -193,7 +193,7 @@ def test_secondary_outage_uses_calendar_fallback_and_keeps_other_sources(tmp_pat
         save_source_valuations=lambda *_: None,
         weight_dates=lambda _: [],
     )
-    official = SimpleNamespace(index_history=lambda *_: ReferenceHistory())
+    official = SimpleNamespace(source_name="csindex", index_history=lambda *_: ReferenceHistory())
     job = HistoricalBackfill(
         repository, Primary, lambda: OfflineBaoStock(archive), official, tmp_path
     )

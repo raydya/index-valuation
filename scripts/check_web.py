@@ -17,6 +17,21 @@ def display(value, digits=2):
     return "—" if value is None else f"{float(value):,.{digits}f}"
 
 
+async def check_price_return(page, data):
+    summary = data["price_return"]
+    value = summary["annualized_return_pct"]
+    expected = "—" if value is None else f"{'+' if float(value) > 0 else ''}{display(value)}%"
+    await expect(page.locator("#annualized-return")).to_have_text(expected)
+    window = f"近{data['chart_years']}年" if data["chart_years"] else "全部历史"
+    await expect(page.locator("#return-basis")).to_have_text(f"{window} · 不含分红")
+    if summary["start_date"]:
+        await expect(page.locator("#return-range")).to_have_text(
+            f"{summary['start_date']} 至 {summary['end_date']}"
+        )
+    if summary["price_status"] == "unverified":
+        await expect(page.locator("#return-status")).to_contain_text("未核验价格")
+
+
 async def check_additional_indices(page, dashboards):
     """Every configured index shares selection, calculation and export behavior."""
     results = []
@@ -34,6 +49,20 @@ async def check_additional_indices(page, dashboards):
         await expect(page.locator("#price")).to_have_text(display(selected["price"]))
         await expect(page.locator("#pe")).to_have_text(display(selected["pe"], 3))
         await expect(page.locator("#eps")).to_have_text(display(selected["implied_eps"]))
+        await check_price_return(page, data)
+        if index.get("tracking_etfs"):
+            await expect(page.locator("#benchmark-note")).to_contain_text(index["tracking_etfs"][0])
+        if index["valuation"]["source"] == "none":
+            await expect(page.locator("#quality-note")).to_contain_text("富途 OpenD 不支持")
+        if selected.get("pe_usable") is False:
+            await expect(page.locator("#quality-note")).to_contain_text("重大来源差异")
+            if data["latest_complete_date"]:
+                await page.locator("#last-usable").click()
+                await expect(page.locator("#as-of")).to_have_value(data["latest_complete_date"])
+                await expect(page.locator("#eps")).not_to_have_text("—")
+                await page.locator("#latest").click()
+                await expect(page.locator("#as-of")).to_have_value(data["available_end"])
+                await expect(page.locator("#eps")).to_have_text("—")
         await expect(page.locator(".mean-row")).to_contain_text(display(selected["mean_points"]))
         await expect(page.locator("#band-rows tr")).to_have_count(len(index["band_multiples"]) + 1)
         if selected["history_span_short"]:
@@ -41,7 +70,7 @@ async def check_additional_indices(page, dashboards):
         await page.locator("[data-mode=quantile]").click()
         await expect(page.locator("#band-rows tr")).to_have_count(6)
         await page.locator("[data-mode=pe]").click()
-        await expect(page.locator("#chart-title")).to_have_text("PE 历史走势")
+        await expect(page.locator("#chart-title")).to_contain_text("PE 历史走势")
         await page.locator("[data-mode=fixed]").click()
         missing = next((r for r in data["series"] if r["pe"] is None), None)
         if missing:
@@ -51,6 +80,7 @@ async def check_additional_indices(page, dashboards):
             await expect(page.locator("#pe")).to_have_text("—")
             await expect(page.locator("#eps")).to_have_text("—")
             await page.locator("#latest").click()
+            await expect(page.locator("#as-of")).to_have_value(data["available_end"])
             await expect(page.locator("#pe")).to_have_text(display(selected["pe"], 3))
         async with page.expect_download() as event:
             await page.locator("#export").click()
@@ -63,6 +93,12 @@ async def check_additional_indices(page, dashboards):
         assert rows[-1]["pe"] == (selected["pe"] or "")
         assert rows[-1]["mean_pe"] == (selected["mean_pe"] or "")
         assert rows[-1]["trade_date"] == data["available_end"]
+        summary = data["price_return"]
+        exported = {row["trade_date"]: row for row in rows}
+        for endpoint in ("start", "end"):
+            day = summary[f"{endpoint}_date"]
+            if day:
+                assert exported[day]["price"] == summary[f"{endpoint}_price"]
         await page.screenshot(path=OUTPUT / f"{key}-web-desktop.png", full_page=True)
         await page.set_viewport_size({"width": 390, "height": 844})
         await page.wait_for_function("document.getElementById('chart').viewBox.baseVal.width < 500")
@@ -81,6 +117,9 @@ async def main():
         response = await client.get("/api/indices/csi300/dashboard?history_years=10")
         response.raise_for_status()
         ten_year = response.json()
+        response = await client.get("/api/indices/csi300/dashboard?chart_years=1")
+        response.raise_for_status()
+        one_year = response.json()
         response = await client.get("/api/indices")
         response.raise_for_status()
         extra = []
@@ -104,6 +143,7 @@ async def main():
         try:
             await page.goto(URL, wait_until="networkidle")
             await expect(page.locator("#pe")).to_have_text(f"{float(data['selected']['pe']):,.3f}")
+            await check_price_return(page, data)
             await expect(page.locator("#band-rows tr")).to_have_count(
                 len(data["selected"]["fixed"]) + 1
             )
@@ -126,21 +166,28 @@ async def main():
             await expect(page.locator("#chart-title")).to_have_text("PE 历史走势")
             await page.locator('[data-years="1"]').click()
             await expect(page.locator('[data-years="1"]')).to_have_attribute("aria-pressed", "true")
+            await check_price_return(page, one_year)
             await page.locator("#history-window").select_option("10")
             await expect(page.locator("#percentile-label")).to_have_text("近10年 PE 分位")
             await expect(page.locator("#mean-summary")).to_have_text(
                 f"近10年平均 {float(ten_year['selected']['mean_pe']):,.2f}×"
             )
+            await check_price_return(page, one_year)
             await page.locator('[data-years="0"]').click()
             await expect(page.locator('[data-years="0"]')).to_have_attribute("aria-pressed", "true")
             await expect(page.locator("#table-description")).to_contain_text(
                 f"{data['available_sessions']:,}"
             )
+            await page.locator("#as-of").fill(data["available_start"])
+            await page.locator("#as-of").dispatch_event("change")
+            await expect(page.locator("#annualized-return")).to_have_text("—")
+            await expect(page.locator("#return-status")).to_contain_text("至少需要两个")
             await page.locator("#as-of").fill("2004-12-31")
             await page.locator("#as-of").dispatch_event("change")
             await expect(page.locator("#pe")).to_have_text("—")
             await expect(page.locator("#eps")).to_have_text("—")
             await expect(page.locator("#mean-summary")).to_have_text("近10年平均 —")
+            await expect(page.locator("#return-range")).to_contain_text("至 2004-12-31")
             await page.locator("#as-of").fill("2005-01-04")
             await page.locator("#as-of").dispatch_event("change")
             await expect(page.locator("#price-source")).to_contain_text("2005-01-04")
@@ -210,6 +257,9 @@ async def main():
                     "live_values",
                     "fixed_bands",
                     "rolling_mean_pe_and_points",
+                    "annualized_price_return_with_chart_window_and_as_of",
+                    "price_return_independent_of_pe_window_and_missing_pe",
+                    "return_endpoints_match_csv_and_single_date_stays_empty",
                     "quantile_bands",
                     "pe_chart",
                     "keyboard_hover",

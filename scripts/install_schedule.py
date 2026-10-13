@@ -13,7 +13,7 @@ LABEL = "cn.index-valuation.daily"
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="生成 macOS 21:00 / 22:00 的每日任务")
+    parser = argparse.ArgumentParser(description="生成覆盖中国与美国收盘后的 macOS 每日任务")
     parser.add_argument("--install", action="store_true", help="安装并加载当前用户的 LaunchAgent")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
@@ -36,6 +36,12 @@ def main() -> int:
             {"Weekday": weekday, "Hour": hour, "Minute": 0}
             for weekday in range(1, 6)
             for hour in (21, 22)
+        ]
+        + [
+            # Tuesday–Saturday in China covers Monday–Friday US closes, including DST.
+            {"Weekday": weekday, "Hour": hour, "Minute": 0}
+            for weekday in range(2, 7)
+            for hour in (7, 8)
         ],
         "StandardOutPath": str(logs / "daily.stdout.log"),
         "StandardErrorPath": str(logs / "daily.stderr.log"),
@@ -57,7 +63,7 @@ def main() -> int:
     subprocess.run(["launchctl", "bootout", f"{domain}/{LABEL}"], capture_output=True, check=False)
     shutil.copyfile(generated, target)
     subprocess.run(["launchctl", "bootstrap", domain, str(target)], check=True)
-    print(f"已安装：{target}\n每个工作日 21:00 采集，22:00 重试；程序内核对交易日历。")
+    print(f"已安装：{target}\n北京时间周一至周五21/22点、周二至周六7/8点；核对各市场交易日历。")
     return 0
 
 

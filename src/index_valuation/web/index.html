@@ -17,13 +17,14 @@
   <main>
     <div id="error" role="alert" hidden><span id="error-text"></span><button id="retry" type="button">重新读取</button></div>
     <section class="overview" aria-labelledby="index-title">
-      <div class="heading-row"><div><div class="security-code" id="code">—</div><h1 id="index-title">指数估值</h1></div><div class="data-stamp"><span class="status-dot"></span><span id="data-stamp">正在读取历史数据</span></div></div>
+      <div class="heading-row"><div><div class="security-code" id="code">—</div><h1 id="index-title">指数估值</h1><p id="benchmark-note" hidden></p></div><div class="data-stamp"><span class="status-dot"></span><span id="data-stamp">正在读取历史数据</span></div></div>
       <div class="metrics" aria-live="polite">
         <div class="metric main-metric"><span>收盘点位</span><strong id="price">—</strong><small id="price-source">—</small></div>
-        <div class="metric"><span>指数 PE</span><strong id="pe">—</strong><small>富途口径</small><small id="mean-summary">近5年平均 —</small></div>
-        <div class="metric"><span>隐含 EPS <abbr title="同日指数点位 ÷ 富途指数 PE；单位为指数点，盈利期间跟随 PE 口径">ⓘ</abbr></span><strong id="eps">—</strong><small>指数盈利点数</small></div>
+        <div class="metric return-metric"><span>年化收益 <abbr title="按图表区间的实际首末收盘点位计算复合年化涨幅，不含分红。少于一年时按实际天数折算。">ⓘ</abbr></span><strong id="annualized-return">—</strong><small id="return-basis">近5年 · 不含分红</small><small id="return-range">—</small><small id="return-status" hidden></small></div>
+        <div class="metric"><span>指数 PE</span><strong id="pe">—</strong><small id="pe-source-label">富途口径</small><small id="mean-summary">近5年平均 —</small></div>
+        <div class="metric"><span>隐含 EPS <abbr title="同日指数点位 ÷ 主源指数 PE；单位为指数点，盈利期间跟随 PE 口径">ⓘ</abbr></span><strong id="eps">—</strong><small>指数盈利点数</small></div>
         <div class="metric"><span id="percentile-label">近5年 PE 分位</span><strong id="percentile">—</strong><small id="history-count">只使用当日之前的数据</small></div>
-        <div class="metric compact-metric"><span>PB / PS</span><strong id="pbps">—</strong><small>富途口径</small></div>
+        <div class="metric compact-metric"><span>PB / PS</span><strong id="pbps">—</strong><small id="valuation-source-label">富途口径</small></div>
       </div>
     </section>
     <section class="workspace" aria-labelledby="chart-title">
@@ -34,8 +35,8 @@
       <aside class="band-pane"><div class="band-heading"><h3 id="band-heading">倍数对应点位</h3><span id="band-date">—</span></div><table class="band-table"><thead><tr><th id="band-first-column">PE</th><th>参考点位</th><th>距收盘</th></tr></thead><tbody id="band-rows"></tbody></table><div class="band-equation"><span>计算方式</span><p id="band-equation">隐含 EPS × PE 倍数</p></div><p class="band-footnote" id="band-footnote">参考点位是指定倍数下的换算结果。</p></aside></div>
       <div class="method-bar"><span class="method-icon">i</span><p id="quality-note">采用富途指数 PE，隐含 EPS 的盈利期间跟随 PE。<a href="#method-details">查看口径与核验</a></p></div>
     </section>
-    <section class="history-section" aria-labelledby="history-title"><div class="section-heading"><div><h2 id="history-title">逐日数据</h2><p id="table-description">历史行情与估值</p></div><span id="table-range"></span></div><div class="table-scroll"><table class="history-table"><thead><tr><th>交易日</th><th>收盘点位</th><th>富途 PE</th><th>历史平均 PE</th><th>隐含 EPS</th><th>PB</th><th>PS</th><th>独立参考 PE</th><th>PE 数值比较</th><th>点位来源</th></tr></thead><tbody id="history-rows"></tbody></table></div><div class="pagination"><span id="page-info">—</span><div><button type="button" id="previous-page">上一页</button><button type="button" id="next-page">下一页</button></div></div></section>
-    <details id="method-details" class="method-details"><summary>数据覆盖与计算口径 <span>来源、完整性和历史统计规则</span></summary><div class="method-content"><div><h3>数据覆盖</h3><dl id="coverage"></dl></div><div><h3>如何理解这张图</h3><p id="basis-note"></p><p>平均 PE 为统计窗口内、同一富途来源的每日正 PE 的算术平均；均值与分位均按日期滚动计算，排除当天和未来数据。分位相等值取中间排名；不足252个历史观测时，均值和分位留空。平均点位 = 当日隐含 EPS × 当时的历史平均 PE。</p><p>发布前记录标为回溯数据。价格优先采用富途，并用对应市场的独立来源核验和补充历史；缺失 PE 不填充，价格核验未通过时不生成 EPS 或点位 band。PE 来源间的差异保留展示，不代表已确认两者计算口径相同。</p></div></div></details>
+    <section class="history-section" aria-labelledby="history-title"><div class="section-heading"><div><h2 id="history-title">逐日数据</h2><p id="table-description">历史行情与估值</p></div><span id="table-range"></span></div><div class="table-scroll"><table class="history-table"><thead><tr><th>交易日</th><th>收盘点位</th><th>指数 PE</th><th>历史平均 PE</th><th>隐含 EPS</th><th>PB</th><th>PS</th><th>独立参考 PE</th><th>PE 数值比较</th><th>点位来源</th></tr></thead><tbody id="history-rows"></tbody></table></div><div class="pagination"><span id="page-info">—</span><div><button type="button" id="previous-page">上一页</button><button type="button" id="next-page">下一页</button></div></div></section>
+    <details id="method-details" class="method-details"><summary>数据覆盖与计算口径 <span>来源、完整性和历史统计规则</span></summary><div class="method-content"><div><h3>数据覆盖</h3><dl id="coverage"></dl></div><div><h3>如何理解这张图</h3><p id="basis-note"></p><p id="return-method">年化收益 = [(期末点位 ÷ 期初点位)^(365.25 ÷ 实际相隔天数) − 1] × 100%。采用图表所选区间内首末可用收盘点位，按实际日期计算，不含分红、交易费用或汇率换算。少于一年时为折算值；历史回看只使用所选日期及之前的数据。此项独立于 PE 统计窗口和估值核验，单源价格会标明未核验，端点价格存在重大差异时留空。</p><p>平均 PE 为统计窗口内、同一主源有效正 PE 的算术平均；按各指数标注的日度或周度规则采样，排除当天和未来数据。分位相等值取中间排名；样本不足时均值和分位留空。平均点位 = 当日隐含 EPS × 当时的历史平均 PE。</p><p>发布前记录标为回溯数据。点位通过对应市场的来源交叉核验；缺失 PE 不填充，价格核验未通过时不生成 EPS 或点位 band。美股新增 PE 主源与对照相差超过5%的当日记录，只保留原值展示，不参与 EPS、band 或后续历史统计。来源数值接近也不代表盈利、加权和亏损处理完全相同。</p></div></div></details>
     <footer><span>指数估值研究</span><span id="footer-range">数据来自富途、指数发布机构及独立行情源</span></footer>
   </main>
 </body>

@@ -2,3 +2,10 @@
 @media(max-width:520px){.compact-metric{grid-column:span 2}.compact-metric strong{white-space:nowrap;font-size:23px}}
 
 .legend i.mean-key{height:0;background:none;border-top:2px dashed var(--c)}.band-table tbody tr.mean-row td{border-top:1px dashed #ccd5e2}.mean-row .band-key{font-weight:600}
+
+#benchmark-note{color:var(--muted);font-size:12px;line-height:1.7;max-width:72ch;margin-top:5px}.metric strong.error{color:#a64a3e}#last-usable{font-size:inherit;color:#244bc5;border:0;background:none;padding:0;text-decoration:underline;cursor:pointer}
+@media(max-width:520px){.heading-row{display:block}.data-stamp{max-width:none;text-align:left;justify-content:flex-start;margin-top:8px}}
+
+.metrics{grid-template-columns:1.2fr 1.2fr 1fr 1fr 1.1fr 1fr}.metric{min-width:0}.return-metric small{line-height:1.6}#return-range{font-variant-numeric:tabular-nums}#return-status{color:#916423}
+@media(max-width:1100px){.metrics{grid-template-columns:repeat(3,minmax(0,1fr));row-gap:20px}.metric:nth-child(4){padding-left:0;border:0}}
+@media(max-width:520px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:20px 16px}.metric:nth-child(even){padding-left:14px;border-left:1px solid #dce3ed}.metric:nth-child(odd){padding-left:0;border-left:0}.compact-metric{grid-column:auto}}

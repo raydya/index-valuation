@@ -15,7 +15,7 @@ from index_valuation.archive import json_text
 from index_valuation.config import Settings
 from index_valuation.db import build_engine
 from index_valuation.domain import DataError
-from index_valuation.index_series import METHOD, build_dashboard, series_csv
+from index_valuation.index_series import build_dashboard, method_for, series_csv
 from index_valuation.registry import load_indices
 from index_valuation.repository import Repository
 
@@ -62,7 +62,10 @@ def create_app(*, repository=None, specs=None, settings=None):
 
     @app.get("/api/indices")
     def indices():
-        return [{"key": s.key, "name": s.name, "code": s.quote_code} for s in specs.values()]
+        return [
+            {"key": s.key, "name": s.name, "code": s.quote_code, "tracking_etfs": s.tracking_etfs}
+            for s in specs.values()
+        ]
 
     def dashboard(key, as_of, chart_years, history_years):
         if key not in specs:
@@ -70,7 +73,7 @@ def create_app(*, repository=None, specs=None, settings=None):
         try:
             return build_dashboard(
                 specs[key],
-                repository.index_series(key, METHOD),
+                repository.index_series(key, method_for(specs[key])),
                 as_of=as_of,
                 chart_years=chart_years,
                 history_years=history_years,

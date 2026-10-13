@@ -15,7 +15,7 @@ URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
 def security_id(spec, symbol):
     if symbol == spec.quote_code and spec.eastmoney_secid:
         return spec.eastmoney_secid
-    exchange, ticker = symbol.split(".")
+    exchange, ticker = symbol.split(".", 1)
     if exchange not in {"SH", "SZ"}:
         raise DataError("An explicit Eastmoney mapping is required for this security")
     return f"{1 if exchange == 'SH' else 0}.{ticker}"
@@ -62,6 +62,8 @@ def parse_prices(data, spec, symbol, start, end, observed_at, path) -> list[Obse
 
 
 class EastmoneySource:
+    source_name = "eastmoney"
+
     def __init__(self, archive, timeout=20):
         self.archive, self.timeout = archive, timeout
         self.client = None

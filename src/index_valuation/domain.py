@@ -50,11 +50,21 @@ class IndexSpec:
     historical_price_source: str = "futu"
     history_start_date: date | None = None
     reference_history_source: str = "csindex"
+    additional_history_sources: tuple[str, ...] = ()
     eastmoney_secid: str | None = None
+    yahoo_symbol: str | None = None
+    nasdaq_symbol: str | None = None
+    fred_series: str | None = None
+    tracking_etfs: tuple[str, ...] = ()
+    description: str = ""
+    futu_supported: bool = True
+    valuation_source: str = "futu"
+    danjuan_symbol: str | None = None
 
     @property
     def market(self) -> str:
-        return "HK" if self.quote_code.startswith("HK.") else "CN"
+        exchange = self.quote_code.split(".", 1)[0]
+        return {"SH": "CN", "SZ": "CN", "CSI": "CN", "HK": "HK", "US": "US"}[exchange]
 
 
 @dataclass(frozen=True)

@@ -4,7 +4,8 @@ const $ = id => document.getElementById(id);
 const state = { index: new URLSearchParams(location.search).get('index'), chartYears: 5, historyYears: 5, asOf: null, mode: 'fixed', data: null, page: 0, hover: -1, request: null };
 const colors = ['#258c88', '#469ca3', '#467bb5', '#706ea9', '#a08b6c', '#b47628'];
 const meanColor = '#b54d64';
-const sourceNames = { futu: '富途', csindex: '中证指数', cnindex: '国证指数', baostock: 'BaoStock', eastmoney: '东方财富' };
+const sourceNames = { futu: '富途', csindex: '中证指数', cnindex: '国证指数', fred: 'FRED', nasdaq: 'Nasdaq', yahoo: 'Yahoo Finance', baostock: 'BaoStock', eastmoney: '东方财富', danjuan: '雪球基金', multpl: 'Multpl', gurufocus: 'GuruFocus' };
+const peBasisNames = { multpl_reported_ttm_current_estimate: '过去12个月已报告盈利，当前 PE 为估算', gurufocus_published_pe_unconfirmed: '供应商指数 PE；盈利、加权及亏损处理未完整确认', csindex_published_rolling_pe: '中证发布的滚动 PE', danjuan_published_pe_ttm: '雪球基金发布的 PE TTM；与官方计算用股本口径分别保存' };
 const num = value => value == null || value === '' || !Number.isFinite(Number(value)) ? null : Number(value);
 const fmt = (value, digits = 2) => num(value) == null ? '—' : num(value).toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 const percent = value => num(value) == null ? '—' : `${fmt(value, 1)}%`;
@@ -60,15 +61,21 @@ function render() {
   document.title = `${d.index.name} · 指数估值`;
   setText('index-title', d.index.name);
   setText('code', d.index.code);
+  setText('benchmark-note', d.index.description || '');
+  $('benchmark-note').hidden = !d.index.description;
+  setText('pe-source-label', d.index.valuation.label);
+  setText('valuation-source-label', d.index.futu_supported ? '富途口径' : '暂无 PB / PS');
   setText('price', fmt(p.price));
   setText('pe', fmt(p.pe, 3));
+  $('pe').classList.toggle('error', p.pe_usable === false);
   setText('mean-summary', `${windowName()}平均 ${p.mean_pe == null ? '—' : `${fmt(p.mean_pe, 2)}×`}`);
   setText('eps', fmt(p.implied_eps));
   setText('pbps', `${fmt(p.pb, 3)} / ${fmt(p.ps, 3)}`);
   setText('price-source', `${sourceNames[p.price_source] || '待补数据'} · ${p.trade_date}`);
+  renderPriceReturn();
   setText('percentile-label', `${windowName()} PE 分位`);
   setText('percentile', percent(p.percentile));
-  setText('history-count', `${fmt(p.history_count, 0)} 个历史观测${p.history_count < d.minimum_history ? '，样本不足' : p.history_span_short ? `，历史不足${d.history_years}年` : ''}`);
+  setText('history-count', `${fmt(p.history_count, 0)} 个${d.index.valuation.history_frequency === 'weekly' ? '周' : '历史'}观测${p.history_count < d.minimum_history ? '，样本不足' : p.history_span_short ? `，历史不足${d.history_years}年` : ''}`);
   setText('data-stamp', `数据截至 ${d.available_end}`);
   $('as-of').min = d.available_start;
   $('as-of').max = d.available_end;
@@ -77,17 +84,23 @@ function render() {
   $('export').removeAttribute('aria-disabled');
   setText('table-description', `当前区间 ${fmt(d.series.length, 0)} 个交易日，点击日期回看估值`);
   setText('table-range', `${d.series[0]?.trade_date || '—'} 至 ${p.trade_date}`);
-  const waiting = p.pe == null ? '当日富途 PE 暂缺，隐含 EPS 和点位 band 暂不生成。 ' : p.implied_eps == null ? '当日价格尚未通过交叉核验，EPS 和点位 band 暂不生成。 ' : p.reference_pe == null ? '当日 PE 暂无独立来源对照。 ' : '';
-  const difference = num(p.pe_relative_error) > .05 ? `富途 PE ${fmt(p.pe, 3)}×，${sourceNames[p.reference_pe_source] || '独立参考'} PE ${fmt(p.reference_pe, 2)}×，数值相差 ${percent(num(p.pe_relative_error) * 100)}。 ` : '';
-  $('quality-note').innerHTML = `${esc(waiting + difference)}富途指数 PE 口径未完全核实；来源差异保留展示。<a href="#method-details">查看口径与核验</a>`;
+  const waiting = p.pe == null ? '当日指数 PE 暂缺，隐含 EPS 和点位 band 暂不生成。 ' : p.pe_usable === false ? '当日 PE 存在重大来源差异，EPS 和点位 band 暂不生成，该 PE 不计入历史均值。 ' : p.implied_eps == null ? '当日价格尚未通过交叉核验，EPS 和点位 band 暂不生成。 ' : p.reference_pe == null ? '当日 PE 暂无独立来源对照，估值带为主源口径参考计算。 ' : '';
+  const difference = num(p.pe_relative_error) > .01 ? `${sourceNames[p.pe_source] || '主源'} PE ${fmt(p.pe, 3)}×，${sourceNames[p.reference_pe_source] || '独立参考'} PE ${fmt(p.reference_pe, 2)}×，数值相差 ${percent(num(p.pe_relative_error) * 100)}。 ` : '';
+  const sourceNote = d.index.valuation.source === 'none' ? '当前展示指数价格；富途 OpenD 不支持该指数估值。' : `${d.index.valuation.label}的加权和亏损处理尚未完整核实；对照 PE 保留各自口径。`;
+  const priceNote = p.price_status === 'unverified' ? '当日点位仅有一个来源，待交叉核验。 ' : '';
+  const usableLink = p.implied_eps == null && d.latest_complete_date && d.latest_complete_date !== p.trade_date ? `<button type="button" id="last-usable">查看 ${esc(d.latest_complete_date)} 的参考 band</button> ` : '';
+  $('quality-note').innerHTML = `${esc(waiting + priceNote + difference + sourceNote)} ${usableLink}<a href="#method-details">查看口径与核验</a>`;
   setText('basis-note', d.basis_note);
   setText('footer-range', `${d.available_start} 至 ${d.available_end} · ${fmt(d.available_sessions, 0)} 个交易日`);
   $('coverage').innerHTML = [
-    ['指数点位', `${fmt(d.coverage.price, 0)} 条`], ['富途 PE', `${fmt(d.coverage.pe, 0)} 条`],
+    ['指数点位', `${fmt(d.coverage.price, 0)} 条`], [d.index.valuation.label, `${fmt(d.coverage.pe, 0)} 条`],
     ['可用隐含 EPS', `${fmt(d.coverage.implied_eps, 0)} 条`], ['正式发布日期', d.index.inception_date],
     ['最新可用 EPS', d.latest_complete_date || '暂无'],
-    ['市场 / 计价币种', `${d.index.market === 'HK' ? '香港' : '内地'} / ${d.index.currency}（图表单位为点）`],
+    ['市场 / 计价币种', `${{ CN: '内地', HK: '香港', US: '美国' }[d.index.market]} / ${d.index.currency}（图表单位为点）`],
+    ...(d.index.tracking_etfs.length ? [['对应 ETF', d.index.tracking_etfs.join(' / ')]] : []),
     ['当日 PE 对照来源', sourceNames[p.reference_pe_source] || '暂无'],
+    ...(p.pe_references || []).map(r => [`${sourceNames[r.source] || r.source} PE`, `${fmt(r.pe, 3)}× · ${QUALITY[r.status]?.[0] || r.status} · ${peBasisNames[r.basis] || '供应商口径'}`]),
+    ['历史统计采样', d.index.valuation.sampling_note],
     ...Object.entries(d.coverage.price_sources).map(([source, count]) => [`${sourceNames[source] || source}点位`, `${fmt(count, 0)} 条`]),
     ['数据性质', '供应商当前提供的历史序列'],
   ].map(([key, value]) => `<dt>${esc(key)}</dt><dd>${esc(value)}</dd>`).join('');
@@ -95,6 +108,28 @@ function render() {
   renderChart();
   renderBandTable();
   renderTable();
+}
+
+function renderPriceReturn() {
+  const r = state.data.price_return;
+  const value = num(r.annualized_return_pct);
+  setText('annualized-return', value == null ? '—' : `${value > 0 ? '+' : ''}${fmt(value, 2)}%`);
+  setText('return-basis', `${state.chartYears ? `近${state.chartYears}年` : '全部历史'} · 不含分红`);
+  setText('return-range', r.start_date ? `${r.start_date} 至 ${r.end_date}` : '区间内暂无价格');
+  const notes = [];
+  if (r.status === 'insufficient_data') notes.push('至少需要两个不同日期的价格');
+  if (r.status === 'invalid_price') notes.push('端点价格无效');
+  if (r.status === 'price_discrepancy') notes.push('端点价格存在重大差异');
+  if (r.status === 'ok' && r.elapsed_days < 365) notes.push('不足1年，按实际天数折算');
+  if (r.price_status === 'unverified') notes.push('端点含未核验价格');
+  if (r.price_status === 'warning') notes.push('端点价格存在1–5%差异');
+  if (r.includes_backcast) notes.push('含发布前回溯数据');
+  if (r.end_date && r.end_date < state.data.selected.trade_date) notes.push('截至最后可用价格日');
+  setText('return-status', notes.join(' · '));
+  $('return-status').hidden = notes.length === 0;
+  $('annualized-return').title = r.start_price && r.end_price
+    ? `${sourceNames[r.start_source] || r.start_source} ${fmt(r.start_price)} → ${sourceNames[r.end_source] || r.end_source} ${fmt(r.end_price)}；相隔 ${r.elapsed_days} 天`
+    : '';
 }
 
 function bandDefinitions() {
@@ -122,23 +157,25 @@ function renderBandTable() {
     return `<tr${def.mean ? ' class="mean-row"' : ''}><td><span class="band-key"><i style="--c:${def.color}"></i>${esc(label)}</span></td><td>${fmt(value)}</td><td class="delta ${delta < 0 ? 'negative' : 'positive'}">${delta > 0 ? '+' : ''}${percent(delta)}</td></tr>`;
   }).join('') || '<tr><td colspan="3">该区间暂无可用的点位估值带</td></tr>';
   setText('band-equation', `${fmt(p.implied_eps)} × ${state.mode === 'fixed' ? 'PE 倍数' : '历史分位 PE'}`);
-  setText('band-footnote', `平均 PE 取${windowName()}窗口内、估值日前 ${fmt(p.history_count, 0)} 个正 PE 的算术平均；至少需 ${state.data.minimum_history} 个观测。${p.history_start ? `实际样本：${p.history_start} 至 ${p.history_end}。` : ''}${p.history_span_short ? `现有 PE 历史不足${state.data.history_years}年。` : ''}参考点位 = 当日隐含 EPS × 对应 PE。`);
+  setText('band-footnote', `平均 PE 取${windowName()}窗口内、估值日前 ${fmt(p.history_count, 0)} 个有效正 PE 的算术平均；至少需 ${state.data.minimum_history} 个观测。${state.data.index.valuation.sampling_note}${p.history_start ? `实际样本：${p.history_start} 至 ${p.history_end}。` : ''}${p.history_span_short ? `现有 PE 历史不足${state.data.history_years}年。` : ''}参考点位 = 当日隐含 EPS × 对应 PE。`);
 }
 
 let plot = null;
 function renderChart() {
   if (!state.data) return;
-  const rows = state.data.series, bands = bandDefinitions(), definitions = [...bands, meanDefinition()];
+  const sampled = state.data.index.valuation.history_frequency === 'weekly' && state.data.series.some(row => row.pe != null);
+  const rows = sampled ? state.data.series.filter((row, i, all) => row.pe != null || i === all.length - 1) : state.data.series;
+  const bands = bandDefinitions(), definitions = [...bands, meanDefinition()];
   const svg = $('chart'), width = Math.max(280, svg.clientWidth || 1000);
   const height = width < 540 ? 290 : Math.max(300, Math.min(440, width * .43));
   const margin = { left: width < 540 ? 46 : 63, right: width < 540 ? 9 : 21, top: 24, bottom: 43 };
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
   const actualKey = state.mode === 'pe' ? 'pe' : 'price';
-  const actualLabel = state.mode === 'pe' ? '富途 PE' : '收盘点位';
+  const actualLabel = state.mode === 'pe' ? '指数 PE' : '收盘点位';
   const valueFor = (row, def) => num(def.mean ? row[def.field] : row[def.field]?.[def.key]);
   const values = rows.flatMap(row => [num(row[actualKey]), ...definitions.map(def => valueFor(row, def))]).filter(v => v != null);
   $('tooltip').hidden = true;
-  setText('chart-title', { fixed: 'PE 估值带', quantile: '历史分位估值带', pe: 'PE 历史走势' }[state.mode]);
+  setText('chart-title', { fixed: 'PE 估值带', quantile: '历史分位估值带', pe: 'PE 历史走势' }[state.mode] + (sampled ? ' · 按 PE 实际采样日' : ''));
   document.querySelectorAll('[data-mode]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === state.mode)));
   if (!values.length) {
     svg.innerHTML = `<text x="${width / 2}" y="${height / 2}" text-anchor="middle">当前区间没有可展示的数据。</text>`;
@@ -189,7 +226,7 @@ function showHover(index) {
   $('hover-dot').setAttribute('cx', px); $('hover-dot').setAttribute('cy', value == null ? 0 : plot.y(value));
   $('hover-dot').setAttribute('visibility', value == null ? 'hidden' : 'visible');
   const tip = $('tooltip');
-  tip.innerHTML = `<strong>${esc(row.trade_date)}${row.phase === 'backcast' ? ' · 回溯' : ''}</strong><div><span>收盘点位</span>${fmt(row.price)}</div><div><span>富途 PE</span>${fmt(row.pe, 3)}</div><div><span>${windowName()}平均 PE</span>${fmt(row.mean_pe, 2)}</div><div><span>隐含 EPS</span>${fmt(row.implied_eps)}</div><div><span>${windowName()}分位</span>${percent(row.percentile)}</div>`;
+  tip.innerHTML = `<strong>${esc(row.trade_date)}${row.phase === 'backcast' ? ' · 回溯' : ''}</strong><div><span>收盘点位</span>${fmt(row.price)}</div><div><span>指数 PE</span>${fmt(row.pe, 3)}</div><div><span>${windowName()}平均 PE</span>${fmt(row.mean_pe, 2)}</div><div><span>隐含 EPS</span>${fmt(row.implied_eps)}</div><div><span>${windowName()}分位</span>${percent(row.percentile)}</div>`;
   tip.hidden = false;
   const box = $('chart-wrap').getBoundingClientRect();
   const point = new DOMPoint(px, 80).matrixTransform($('chart').getScreenCTM());
@@ -223,6 +260,7 @@ window.addEventListener('resize', () => { cancelAnimationFrame(resizeFrame); res
 $('previous-page').addEventListener('click', () => { if (state.page > 0) { state.page--; renderTable(); } });
 $('next-page').addEventListener('click', () => { if ((state.page + 1) * 12 < state.data.series.length) { state.page++; renderTable(); } });
 $('history-rows').addEventListener('click', event => { const button = event.target.closest('[data-date]'); if (button) { state.asOf = button.dataset.date; load(); window.scrollTo({ top: 0, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' }); } });
+$('quality-note').addEventListener('click', event => { if (event.target.id === 'last-usable') { state.asOf = state.data.latest_complete_date; load(); } });
 $('chart').addEventListener('pointermove', event => {
   if (!plot) return;
   const p = new DOMPoint(event.clientX, event.clientY).matrixTransform($('chart').getScreenCTM().inverse());
@@ -241,7 +279,7 @@ async function start() {
     const response = await fetch('/api/indices');
     if (!response.ok) throw new Error('无法获取指数列表，请检查本地服务。');
     const indices = await response.json();
-    $('index-select').innerHTML = indices.map(index => `<option value="${esc(index.key)}">${esc(index.name)}</option>`).join('');
+    $('index-select').innerHTML = indices.map(index => `<option value="${esc(index.key)}">${esc(index.name)}${index.tracking_etfs.length ? `（${esc(index.tracking_etfs.join('/'))}）` : ''}</option>`).join('');
     state.index = indices.some(index => index.key === state.index) ? state.index : indices[0].key;
     $('index-select').value = state.index;
     rememberIndex();

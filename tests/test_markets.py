@@ -36,7 +36,6 @@ OBSERVED = datetime(2026, 10, 13, 10, tzinfo=UTC)
 
 def test_registry_supports_separate_markets_and_variable_constituent_counts():
     specs = load_indices()
-    assert len(specs) == 6
     assert specs["sse"].expected_constituents is None
     assert specs["hstech"].market == "HK"
     assert specs["hstech"].currency == "HKD"

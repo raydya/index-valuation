@@ -250,6 +250,8 @@ class HistoryMarket:
 
 
 class OfficialHistory:
+    source_name = "csindex"
+
     def index_history(self, spec, start, end):
         from index_valuation.domain import ReferenceHistory
 

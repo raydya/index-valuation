@@ -2,9 +2,9 @@
 
 使用 Python、PostgreSQL 和本地网页构建指数估值应用：采集指数每日点位、PE / PB / PS，推导隐含 EPS，展示固定倍数和历史分位估值带。
 
-主流程直接采用 Futu OpenD 的指数估值，使用中证指数、国证指数、BaoStock 和东方财富核验点位并补充历史缺口，不依赖成分股数据。支持内地与香港市场各自的交易日历。原有成分股采集与重算流程保留为独立分析能力。指数通过 `indices.toml` 配置，新增同类指数可复用计算与网页。
+主流程采用指数整体估值，不依赖成分股数据。内地、香港指数以 Futu OpenD 为主；美股指数使用明确配置的价格、PE 来源。支持三个市场各自的交易日历与时区。原有成分股采集与重算流程保留为独立分析能力。指数通过 `indices.toml` 配置，新增同类指数可复用计算与网页。
 
-**指数隐含 EPS = 同日收盘点位 / 富途指数 PE。** 单位为指数点，富途指数 PE 的盈利期与加权口径尚未完整核实，不标记为已核实的 TTM。中证滚动 PE 单列比较，历史分位只使用富途自身序列。详见 [直接指数估值说明](docs/direct-index-valuation.md)。
+**指数隐含 EPS = 同日收盘点位 / 配置主源的指数 PE。** 单位为指数点；供应商盈利、加权和亏损处理尚未全部独立核实。不同主源使用独立方法版本，参考 PE 不混入主源历史，缺失值不填充。详见 [直接指数估值说明](docs/direct-index-valuation.md)。
 
 ## 技术栈
 
@@ -64,11 +64,15 @@ uv run index-valuation backfill-index --index sse
 uv run index-valuation backfill-index --index chinext
 uv run index-valuation backfill-index --index star50
 uv run index-valuation backfill-index --index hstech
+uv run index-valuation backfill-index --index divlowvol
+uv run index-valuation backfill-index --index sp500
+uv run index-valuation backfill-index --index nasdaq100
+uv run index-valuation backfill-index --index ustotal
 
 # 打开本机网页：http://127.0.0.1:8000
 uv run index-valuation serve
 
-# 日常增量更新：重抓最近14个自然日，随后重新生成指数序列
+# 日常增量更新：从最后已存日期回退14天采集，随后重新生成指数序列
 uv run index-valuation update-index --all
 
 # 无需重新访问来源，只使用数据库重建指数序列及导出
@@ -77,13 +81,21 @@ uv run index-valuation build-index --index csi300
 
 也可用 `make backfill-index`、`make daily`、`make web`。网页支持指数切换、1/3/5/10年及全部区间、指定日期回看、3/5/10年及全部历史统计窗口、固定倍数 band（保留8倍，各指数可配置）、历史平均 PE 虚线、滚动分位 band、PE 走势、逐日数据和 CSV 导出。接口为只读，仅绑定 `127.0.0.1`。读网页不需要 OpenD 在线，但 PostgreSQL 必须可访问。
 
-直达：[沪深300](http://127.0.0.1:8000/?index=csi300)、[中证A500](http://127.0.0.1:8000/?index=csia500)、[上证指数](http://127.0.0.1:8000/?index=sse)、[创业板指](http://127.0.0.1:8000/?index=chinext)、[科创50](http://127.0.0.1:8000/?index=star50)、[恒生科技](http://127.0.0.1:8000/?index=hstech)。切换后刷新会保留所选指数。实际 PE 历史少于所选统计年限时，页面明确提示并显示实际样本起止日期。
+顶部“年化收益”按图表所选区间的首末可用点位计算复合年化涨幅，随区间和历史日期变化，显示实际起止日期。该值**不含分红**，与 PE 统计窗口独立；计算公式、短历史和价格质量处理见[年化收益说明](docs/direct-index-valuation.md#年化收益)。
+
+直达：[沪深300](http://127.0.0.1:8000/?index=csi300)、[中证A500](http://127.0.0.1:8000/?index=csia500)、[上证指数](http://127.0.0.1:8000/?index=sse)、[创业板指](http://127.0.0.1:8000/?index=chinext)、[科创50](http://127.0.0.1:8000/?index=star50)、[恒生科技](http://127.0.0.1:8000/?index=hstech)、[红利低波](http://127.0.0.1:8000/?index=divlowvol)。切换后刷新会保留所选指数。实际 PE 历史少于所选统计年限时，页面明确提示并显示实际样本起止日期。
 
 沪深300数据覆盖 **2002-01-04 至 2026-10-13 的6,007个交易日**。富途 PE / PB / PS 各5,286条，隐含 EPS 5,286条，始于2005-01-04。2005-04-08之前标记为回溯数据，2002—2004年没有 PE 的日期保留点位、估值为空。[采集报告](docs/index-web-2026-10-13.md)
 
 中证A500（`SH.000510`）点位覆盖 **2004-12-31 至 2026-10-13 的5,287个交易日**；富途 PE / PB / PS 及隐含 EPS 各495条，始于正式发布日2024-09-23。发布前只展示可用回溯点位；不借用沪深300或中证 PE 填充。已纳入 `update-index --all` 的每日更新。[接入报告](docs/csia500-index-2026-10-13.md)
 
 新接入的上证指数、创业板指、科创50、恒生科技使用同一流程；市场、独立参考源、供应商代码映射和 band 倍数均由配置决定。上证指数等成分数量可变的指数允许不指定固定成分数（迁移 `0006`）。恒生科技使用 HKD 原生指数点位，未进行人民币换算。[四指数接入与核验报告](docs/new-indices-2026-10-13.md)
+
+红利低波接入**中证红利低波动指数 H30269**，共50只成分。富途未收录该指数，采用中证官方日度滚动 PE，东方财富核验点位、雪球基金核验 PE，使用独立方法 `csindex_index_implied_daily_v1`。截至2026-10-13，保存2006-01-04起的5,044条点位、2013-12-05起的3,123条官方 PE、3,008条可用隐含 EPS。当天 PE 来源差异6.29%，暂停当天 EPS/band；可回看2026-10-12的官方口径参考 band。已纳入每日更新。[红利低波接入与覆盖记录](docs/divlowvol-index-2026-10-13.md)
+
+美股 ETF 对应指数已接入：[VOO → 标普500](http://127.0.0.1:8000/?index=sp500)、[QQQ → 纳斯达克100](http://127.0.0.1:8000/?index=nasdaq100)、[VTI → Morningstar US Total Market](http://127.0.0.1:8000/?index=ustotal)（原 CRSP US Total Market，2026年7月更名）。展示价格回报指数点位，未用 ETF 价格代替指数。
+
+截至2026-10-13，三者分别保存17,520、10,337、3,906条价格。标普500和纳指100以雪球基金发布的 PE TTM 为主，分别有470、469条有效历史采样；每个已结束自然周最多计一个样本，最低52个周观测才显示均值和分位。2026-10-12的两条 PE 对照差异均超过5%，已标记并停用当天 EPS/band；可点击网页中的入口回看2026-10-08的参考 band。VTI 基准目前只有单源价格，PE/EPS/band 留空。[美股接入、数据来源和限制](docs/us-indices-2026-10-13.md)
 
 直接指数结果存入独立 `index_series` 表（迁移 `ec157f69d574`）；原始来源仍在 `daily_observations` 和 `source_valuations`。每日导出 `data/exports/指数标识-index-bands-日期.csv`，来源原始响应保存在 `data/raw/`。`collected` 只表示采集/派生完成，**不表示富途指数 PE 的会计口径已独立核实**。
 
@@ -162,7 +174,7 @@ uv run python scripts/install_schedule.py --install
 launchctl print gui/$(id -u)/cn.index-valuation.daily
 ```
 
-每个工作日北京时间 21:00 运行全部配置指数，22:00 再运行一次用于延迟数据更新或失败重试。现有调度入口已改为 `update-index --all`，近14天重叠采集可补上近期漏跑日；只接收参考交易日历中的记录。调度使用系统时区，安装器要求系统处于 UTC+8。
+北京时间周一至周五21:00、22:00，以及周二至周六07:00、08:00运行全部配置指数，覆盖美国夏令时及冬令时收盘后的采集与重试。各指数根据自身时区选择已收盘日期。调度入口为 `update-index --all`，近14天重叠采集可补上近期漏跑日；只接收对应市场交易日历中的记录。调度使用系统时区，安装器要求系统处于 UTC+8。
 
 机器需保持开机、登录，PostgreSQL 与已登录的 OpenD 可访问。历史接口缺失的数据不填充；供应商更早的历史修订可通过 `backfill-index` 全量刷新。每次任务最长一小时，日志为 `logs/daily.stdout.log` 与 `logs/daily.stderr.log`，详细状态同时保存在 `pipeline_runs`。直接流程不再每日抓取300只成分股，成分流程可单独运行。
 

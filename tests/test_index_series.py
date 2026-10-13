@@ -206,6 +206,10 @@ def test_web_api_and_csv_use_same_reproducible_data_without_credentials(tmp_path
         assert payload["selected"]["implied_eps"] == "10"
         assert payload["selected"]["mean_pe"] == "15"
         assert payload["selected"]["mean_points"] == "150"
+        assert Decimal(payload["price_return"]["annualized_return_pct"]) == 0
+        assert payload["price_return"]["start_date"] == "2020-01-02"
+        assert payload["price_return"]["end_date"] == "2020-01-04"
+        assert payload["price_return"]["basis"] == "price_return_excluding_dividends"
         assert len(payload["series"]) == 3
         output = client.get("/api/indices/test/export.csv?as_of=2020-01-04&chart_years=0")
         assert output.status_code == 200
@@ -220,6 +224,8 @@ def test_web_api_and_csv_use_same_reproducible_data_without_credentials(tmp_path
         assert rows[-1]["price_source"] == "futu"
         assert rows[-1]["pe_source"] == "futu"
         assert rows[-1]["basis_status"] == "unconfirmed"
+        assert rows[0]["price"] == payload["price_return"]["start_price"]
+        assert rows[-1]["price"] == payload["price_return"]["end_price"]
         assert client.get("/api/indices/missing/dashboard").status_code == 404
         assert client.get("/api/indices/test/dashboard?chart_years=2").status_code == 422
         assert client.get("/api/indices/test/dashboard?as_of=1900-01-01").status_code == 422
