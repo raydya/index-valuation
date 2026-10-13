@@ -1,0 +1,463 @@
+from dataclasses import replace
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
+from uuid import UUID, uuid4
+
+import pytest
+from sqlalchemy import create_engine, func, select, text, update
+
+from index_valuation.config import Settings
+from index_valuation.db import Base, build_engine
+from index_valuation.domain import (
+    Constituent,
+    DataError,
+    IndexSpec,
+    Observation,
+    SourceError,
+    SourceValuation,
+    WeightSnapshot,
+)
+from index_valuation.models import (
+    DailyFundamental,
+    DailyObservation,
+    DailyValuation,
+    FundamentalBatch,
+    RunRecord,
+    SourceValuationRecord,
+    WeightMember,
+    WeightRecord,
+)
+from index_valuation.pipeline import Pipeline
+from index_valuation.repository import Repository
+
+pytestmark = pytest.mark.integration
+DAY = date(2026, 10, 12)
+NOW = datetime(2026, 10, 12, 13, tzinfo=UTC)
+SPEC = IndexSpec("test_index", "Test", "000300", "SH.000300", 2)
+MEMBERS = (Constituent("SH.600001", "A", Decimal(60)), Constituent("SZ.000001", "B", Decimal(40)))
+
+
+@pytest.fixture
+def repository():
+    settings = Settings()
+    admin = build_engine(settings)
+    schema = "test_valuation_" + uuid4().hex
+    with admin.begin() as connection:
+        connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+    engine = create_engine(
+        settings.database_url,
+        connect_args={
+            "options": f"-c search_path={schema} -c timezone=UTC",
+            "connect_timeout": settings.postgres_connect_timeout,
+        },
+    )
+    try:
+        Base.metadata.create_all(engine)
+        yield Repository(engine)
+    finally:
+        engine.dispose()
+        with admin.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        admin.dispose()
+
+
+class FixedClock(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return NOW.astimezone(tz) if tz else NOW.replace(tzinfo=None)
+
+
+class Weights:
+    def fetch(self, spec):
+        return WeightSnapshot(
+            DAY, MEMBERS, "csindex", "https://example.test/weights", "test", "test.xls"
+        )
+
+
+class Market:
+    def __init__(self, source, *, missing=False, failure=False, trading=True):
+        self.source, self.missing, self.failure, self.trading = source, missing, failure, trading
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        pass
+
+    def members(self, spec):
+        return {item.symbol for item in MEMBERS}, "test-members.json"
+
+    def is_trading_day(self, spec, day):
+        return self.trading
+
+    def daily(self, spec, symbols, day):
+        if self.failure:
+            raise SourceError("CN MarketStocks permission unavailable")
+        rows = []
+        for symbol in symbols:
+            if self.missing and symbol == "SZ.000001":
+                continue
+            is_index = symbol == spec.quote_code
+            price = Decimal(100 if is_index else (10 if symbol.startswith("SH") else 20))
+            rows.append(
+                Observation(
+                    symbol,
+                    day,
+                    self.source,
+                    price,
+                    None if is_index else Decimal(1),
+                    None if is_index else price,
+                    NOW,
+                    NOW,
+                )
+            )
+        return rows, []
+
+
+def pipeline(repository, tmp_path, monkeypatch, *, missing=False, failure=False, trading=True):
+    monkeypatch.setattr("index_valuation.pipeline.datetime", FixedClock)
+    return Pipeline(
+        repository,
+        Weights(),
+        lambda: Market("futu", failure=failure, trading=trading),
+        lambda: Market("baostock", missing=missing),
+        tmp_path,
+    )
+
+
+def count(repository, model):
+    with repository.engine.connect() as connection:
+        return connection.scalar(select(func.count()).select_from(model))
+
+
+def test_repeated_daily_run_updates_data_and_preserves_run_audit(repository, tmp_path, monkeypatch):
+    job = pipeline(repository, tmp_path, monkeypatch)
+    first, second = job.run_daily(SPEC), job.run_daily(SPEC)
+    assert first["pe_ttm"] == second["pe_ttm"] == Decimal("12.5")
+    assert second["status"] == "verified"
+    assert first["run_id"] != second["run_id"]
+    assert count(repository, WeightRecord) == 1
+    assert count(repository, WeightMember) == 2
+    assert count(repository, DailyObservation) == 6
+    assert count(repository, DailyValuation) == 1
+    assert count(repository, RunRecord) == 2
+    replay = job.recalculate(SPEC, DAY)
+    assert replay["pe_ttm"] == Decimal("12.5")
+
+
+def test_a_second_index_uses_the_same_workflow_and_reuses_security_observations(
+    repository, tmp_path, monkeypatch
+):
+    job = pipeline(repository, tmp_path, monkeypatch)
+    other = replace(SPEC, key="another_index", name="Another", quote_code="SH.000905")
+    assert job.run_daily(SPEC)["status"] == "verified"
+    assert job.run_daily(other)["status"] == "verified"
+    assert count(repository, WeightRecord) == 2
+    assert count(repository, DailyObservation) == 8  # two stocks plus two indices, two sources
+    assert count(repository, DailyValuation) == 2
+
+
+def test_missing_independent_data_blocks_pe_and_remains_auditable(
+    repository, tmp_path, monkeypatch
+):
+    report = pipeline(repository, tmp_path, monkeypatch, missing=True).run_daily(SPEC)
+    assert report["status"] == "blocked"
+    assert report["pe_ttm"] is None
+    assert report["check_summary"]["missing"] == 2
+    assert repository.latest_report(SPEC.key)["status"] == "blocked"
+
+
+def test_permission_failure_never_falls_back_to_secondary_as_primary(
+    repository, tmp_path, monkeypatch
+):
+    report = pipeline(repository, tmp_path, monkeypatch, failure=True).run_daily(SPEC)
+    assert report["status"] == "failed"
+    assert "permission" in report["error"]
+    assert count(repository, WeightMember) == 2
+    assert count(repository, DailyObservation) == 0
+
+
+def test_holidays_do_not_create_fake_market_rows(repository, tmp_path, monkeypatch):
+    report = pipeline(repository, tmp_path, monkeypatch, trading=False).run_daily(SPEC)
+    assert report["status"] == "skipped"
+    assert count(repository, DailyObservation) == 0
+
+
+def test_job_lock_excludes_overlapping_runs_and_is_released(repository):
+    with repository.lock(SPEC.key):
+        with pytest.raises(DataError, match="already running"), repository.lock(SPEC.key):
+            pass
+    with repository.lock(SPEC.key):
+        pass
+
+
+def test_snapshot_selection_does_not_use_future_weights(repository):
+    repository.ensure_index(SPEC)
+    snapshot = Weights().fetch(SPEC)
+    repository.save_snapshot(SPEC, snapshot, {"status": "pass"})
+    future = replace(snapshot, as_of=date(2026, 11, 1), sha256="future")
+    repository.save_snapshot(SPEC, future, {"status": "pass"})
+    assert repository.snapshot(SPEC.key, DAY)[1].as_of == DAY
+
+
+def test_band_history_excludes_current_day_and_future_results(repository, tmp_path, monkeypatch):
+    pipeline(repository, tmp_path, monkeypatch).run_daily(SPEC)
+    assert repository.history(SPEC, DAY) == []
+    assert repository.history(SPEC, date(2026, 10, 13)) == [Decimal("12.5")]
+
+
+class HistoryMarket:
+    def __init__(self, source, failure=False):
+        self.source, self.failure = source, failure
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        pass
+
+    def trading_days(self, start, end):
+        return {date(2005, 4, 8), date(2005, 4, 11)}, "calendar.json"
+
+    def index_history(self, spec, start, end):
+        if self.failure:
+            raise SourceError("historical quota unavailable")
+        days = sorted(self.trading_days(start, end)[0])
+        if self.source == "futu":
+            days = days[1:]  # primary missing inception day
+        return [
+            Observation(
+                spec.quote_code,
+                day,
+                self.source,
+                Decimal(1000),
+                None,
+                None,
+                NOW,
+                NOW,
+                eps_method="not_applicable",
+            )
+            for day in days
+        ]
+
+    def valuation_history(self, spec, start, end):
+        return [
+            SourceValuation(
+                self.source, spec.quote_code, day, "pe", "vendor_pe", Decimal(15), NOW, "pe.json"
+            )
+            for day in sorted(self.trading_days(start, end)[0])
+        ]
+
+
+class OfficialHistory:
+    def index_history(self, spec, start, end):
+        from index_valuation.domain import ReferenceHistory
+
+        source = HistoryMarket("csindex")
+        return ReferenceHistory(
+            source.index_history(spec, start, end), source.valuation_history(spec, start, end)
+        )
+
+
+def test_historical_backfill_is_idempotent_and_does_not_invent_component_pe(repository, tmp_path):
+    from index_valuation.history import HistoricalBackfill
+
+    spec = replace(SPEC, inception_date=date(2005, 4, 8))
+    repository.ensure_index(spec)
+    repository.save_snapshot(spec, Weights().fetch(spec), {"status": "pass"})
+    job = HistoricalBackfill(
+        repository,
+        lambda: HistoryMarket("futu"),
+        lambda: HistoryMarket("baostock"),
+        OfficialHistory(),
+        tmp_path,
+    )
+    first = job.run(spec, end=date(2005, 4, 11))
+    second = job.run(spec, end=date(2005, 4, 11))
+    assert first["run_id"] != second["run_id"]
+    assert second["status"] == "partial"
+    assert second["sources"]["futu_price"]["missing_sessions"] == 1
+    assert second["first_session"]["futu_price"] is None
+    assert second["first_session"]["baostock_price"] == 1000
+    assert second["component_recalculation"]["sessions_without_prior_weights"] == 2
+    assert second["bands"] is None
+    assert count(repository, DailyObservation) == 5
+    assert count(repository, SourceValuationRecord) == 4
+    assert count(repository, DailyValuation) == 0
+    assert count(repository, RunRecord) == 2
+    assert repository.history(spec, date(2005, 4, 12)) == []
+
+
+def test_historical_price_failure_preserves_pe_and_secondary_without_promoting_them(
+    repository, tmp_path
+):
+    from index_valuation.history import HistoricalBackfill
+
+    job = HistoricalBackfill(
+        repository,
+        lambda: HistoryMarket("futu", failure=True),
+        lambda: HistoryMarket("baostock"),
+        OfficialHistory(),
+        tmp_path,
+    )
+    report = job.run(SPEC, date(2005, 4, 8), date(2005, 4, 11))
+    assert report["sources"]["futu_price"]["status"] == "failed"
+    assert report["sources"]["futu_pe"]["rows"] == 2
+    assert report["first_session"]["futu_price"] is None
+    assert report["last_session"]["futu_price"] is None
+    assert report["primary_source"] == "futu"
+    assert count(repository, DailyValuation) == 0
+
+
+@pytest.mark.parametrize("price_provider", ["eastmoney", "futu"])
+def test_company_backfill_keeps_provenance_and_resumes_committed_symbols(
+    repository, tmp_path, price_provider
+):
+    from index_valuation.fundamentals import (
+        FundamentalBackfill,
+        method_for,
+        price_observation_source,
+    )
+
+    spec = replace(SPEC, inception_date=date(2005, 4, 8), historical_price_source=price_provider)
+    price_source = price_observation_source(price_provider)
+    repository.ensure_index(spec)
+    repository.save_snapshot(spec, Weights().fetch(spec), {"status": "pass"})
+    day, calls = date(2005, 4, 8), []
+    prior_run = repository.start_run(spec, day)
+    repository.save_observations(
+        prior_run,
+        [
+            Observation(m.symbol, day, "futu", Decimal(100), Decimal(4), Decimal(25), NOW, NOW)
+            for m in MEMBERS
+        ],
+    )
+
+    class Source(HistoryMarket):
+        def trading_days(self, start, end):
+            return {day}, "calendar.json"
+
+        def security_dates(self, symbols):
+            return {s: {"listed": day, "delisted": None} for s in symbols}, "profiles.json"
+
+        def price_history(self, spec, symbol, start, end):
+            return [Observation(symbol, day, price_source, Decimal(100), None, None, NOW, NOW)]
+
+        def company_pe_history(self, spec, symbol, start, end):
+            calls.append(symbol)
+            return [
+                SourceValuation(
+                    "futu",
+                    symbol,
+                    day,
+                    "pe_ttm",
+                    "futu_company_pe_ttm_v1",
+                    Decimal(20),
+                    NOW,
+                    "pe.json",
+                )
+            ]
+
+        def company_history(self, spec, symbol, start, end):
+            return [
+                Observation(
+                    symbol, day, "baostock", Decimal(100), Decimal(5), Decimal(20), NOW, NOW
+                )
+            ]
+
+    job = FundamentalBackfill(
+        repository,
+        lambda: Source("futu"),
+        lambda: Source("baostock"),
+        lambda: Source("eastmoney"),
+        tmp_path,
+    )
+    first, second = job.run(spec, end=day), job.run(spec, end=day)
+    assert first["status"] == second["status"] == "complete"
+    assert len(calls) == 2
+    assert second["resumed_symbols"] == 2
+    assert count(repository, DailyFundamental) == 2
+    assert count(repository, FundamentalBatch) == 2
+    assert count(repository, DailyValuation) == 0
+    rows = repository.fundamentals(
+        list(repository.constituent_universe(spec.key)), day, method_for(price_provider)
+    )
+    assert all(
+        row.price_source == price_source and row.pe_source == "futu" for row in rows.values()
+    )
+    assert all(row.eps_ttm == 5 for row in rows.values())
+    original = repository.observations("futu", day, [m.symbol for m in MEMBERS])
+    assert all(row.eps_ttm == 4 for row in original.values())
+
+    calculator = Pipeline(repository, None, None, None, tmp_path)
+    unavailable = calculator.recalculate(spec, day, historical_fundamentals=True)
+    assert unavailable["status"] == "failed"
+    assert "No weight snapshot" in unavailable["error"]
+    assert count(repository, DailyValuation) == 0  # present-day membership is not backdated
+
+    historical_weights = replace(Weights().fetch(spec), as_of=day, sha256="historical-weights")
+    repository.save_snapshot(spec, historical_weights, {"status": "pass"})
+    repository.save_observations(
+        UUID(first["run_id"]),
+        [
+            Observation(spec.quote_code, day, source, Decimal(1000), None, None, NOW, NOW)
+            for source in ("futu", "baostock")
+        ],
+    )
+    replay = calculator.recalculate(spec, day, historical_fundamentals=True)
+    assert replay["status"] == "verified"
+    assert replay["pe_ttm"] == 20
+    assert replay["index_eps_ttm"] == 50
+    assert replay["primary_source"] == f"futu_pe+{price_provider}_price"
+    assert repository.history(spec, DAY) == []
+    assert repository.history(spec, date(2005, 4, 11), replay["method"]) == [Decimal(20)]
+
+    # A later reference PE correction must block replay even if stored EPS still agrees.
+    with repository.engine.begin() as connection:
+        connection.execute(
+            update(DailyObservation)
+            .where(
+                DailyObservation.source == "baostock", DailyObservation.symbol == MEMBERS[0].symbol
+            )
+            .values(pe_ttm=Decimal(40))
+        )
+    assert calculator.recalculate(spec, day, historical_fundamentals=True)["status"] == "blocked"
+
+
+def test_direct_index_materialization_is_independent_and_idempotent(repository, tmp_path):
+    from index_valuation.index_series import METHOD, IndexSeries
+    from index_valuation.models import IndexSeriesRecord
+
+    repository.ensure_index(SPEC)
+    run = repository.start_run(SPEC, DAY)
+    repository.save_observations(
+        run,
+        [
+            Observation(SPEC.quote_code, DAY, source, Decimal(1000), None, None, NOW, NOW)
+            for source in ("futu", "eastmoney")
+        ],
+    )
+    repository.save_source_valuations(
+        run,
+        [
+            SourceValuation(
+                "futu",
+                SPEC.quote_code,
+                DAY,
+                "pe",
+                "futu_valuation_pe",
+                Decimal(20),
+                NOW,
+                "test.json",
+            )
+        ],
+    )
+    job = IndexSeries(repository, tmp_path)
+    first, second = job.refresh(SPEC), job.refresh(SPEC)
+    assert first["run_id"] != second["run_id"]
+    assert second["latest"]["implied_eps"] == 50
+    assert second["latest"]["fixed"]["10"] == 500
+    assert count(repository, IndexSeriesRecord) == 1
+    assert count(repository, WeightRecord) == count(repository, DailyValuation) == 0
+    assert repository.index_series(SPEC.key, METHOD)[0]["pe"] == 20
+    assert repository.history(SPEC, DAY + timedelta(days=1)) == []

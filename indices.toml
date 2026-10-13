@@ -1,0 +1,84 @@
+# 新增同类指数只需增加一个配置段，采集、核验、入库和估值共用同一流程。
+[indices.csi300]
+name = "沪深300"
+provider_code = "000300"
+quote_code = "SH.000300"
+expected_constituents = 300
+# 正式发布日期；基日 2004-12-31 不作为默认历史试跑起点。
+inception_date = 2005-04-08
+# 中证接口的最早有效回溯点位；早于发布日期的数据单独标记。
+history_start_date = 2002-01-04
+# 用户已授权历史价格补源；公司 PE TTM 仍取富途并与 BaoStock 核验。
+historical_price_source = "eastmoney"
+currency = "CNY"
+timezone = "Asia/Shanghai"
+close_time = "15:00"
+max_weight_age_days = 45
+band_min_observations = 252
+band_window_days = 1826
+band_multiples = [8, 10, 12, 15, 18, 20, 25]
+
+[indices.csia500]
+name = "中证A500"
+provider_code = "000510"
+quote_code = "SH.000510"
+expected_constituents = 500
+# 中证官方单张：2024-09-23 正式发布，2004-12-31 为基日。
+# 发布前供应商提供的历史记录由通用流程标记为 backcast。
+inception_date = 2024-09-23
+history_start_date = 2004-12-31
+historical_price_source = "eastmoney"
+currency = "CNY"
+timezone = "Asia/Shanghai"
+close_time = "15:00"
+max_weight_age_days = 45
+band_min_observations = 252
+band_window_days = 1826
+band_multiples = [8, 10, 12, 15, 18, 20, 25]
+
+[indices.sse]
+name = "上证指数"
+provider_code = "000001"
+quote_code = "SH.000001"
+# 综合指数成分数量随上市、退市等变化，不设置固定数量。
+inception_date = 1991-07-15
+history_start_date = 1990-12-19
+historical_price_source = "eastmoney"
+band_multiples = [8, 10, 12, 15, 18, 20, 25]
+
+[indices.chinext]
+name = "创业板指"
+provider_code = "399006"
+quote_code = "SZ.399006"
+expected_constituents = 100
+inception_date = 2010-06-01
+history_start_date = 2010-05-31
+historical_price_source = "eastmoney"
+reference_history_source = "cnindex"
+band_multiples = [8, 20, 30, 40, 50, 60, 80]
+
+[indices.star50]
+name = "科创50"
+provider_code = "000688"
+quote_code = "SH.000688"
+expected_constituents = 50
+inception_date = 2020-07-23
+history_start_date = 2019-12-31
+historical_price_source = "eastmoney"
+band_multiples = [8, 20, 40, 60, 80, 100, 120]
+
+[indices.hstech]
+name = "恒生科技"
+provider_code = "HSTECH"
+quote_code = "HK.800700"
+# 成分数量以供应商发布为准；直接指数估值不依赖成分数量。
+inception_date = 2020-07-27
+history_start_date = 2014-12-31
+historical_price_source = "eastmoney"
+reference_history_source = "none"
+eastmoney_secid = "124.HSTECH"
+currency = "HKD"
+timezone = "Asia/Hong_Kong"
+# 港股收市竞价最迟在16:10结束；半日市也等此时再采集当日完整数据。
+close_time = "16:10"
+band_multiples = [8, 10, 15, 20, 25, 30, 40]
