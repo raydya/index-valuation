@@ -174,21 +174,29 @@ macOS 安装用户级任务：
 
 ```bash
 make schedule  # 先生成可检查的 plist
-uv run python scripts/install_schedule.py --install
-launchctl print gui/$(id -u)/cn.index-valuation.daily
+uv run --locked python scripts/install_schedule.py --install
+launchctl print gui/$(id -u)/cn.index-valuation.daily.asia
+launchctl print gui/$(id -u)/cn.index-valuation.daily.us
 ```
 
-北京时间周一至周五21:00、22:00，以及周二至周六07:00、08:00运行全部配置指数，覆盖美国夏令时及冬令时收盘后的采集与重试。各指数根据自身时区选择已收盘日期。调度入口为 `update-index --all`，近14天重叠采集可补上近期漏跑日；只接收对应市场交易日历中的记录。调度使用系统时区，安装器要求系统处于 UTC+8。
+北京时间**每天17:00更新A股和港股，每天09:00更新美股**，分别执行 `update-index --market CN HK` 和 `update-index --market US`。周末和节假日也运行，各指数按自身时区、收盘时间和交易日历选择数据，不生成非交易日记录。09:00覆盖美国夏令时和冬令时收盘。新增指数按配置中的市场自动归入任务。
 
-机器需保持开机、登录，PostgreSQL 与已登录的 OpenD 可访问。历史接口缺失的数据不填充；供应商更早的历史修订可通过 `backfill-index` 全量刷新。每次任务最长一小时，日志为 `logs/daily.stdout.log` 与 `logs/daily.stderr.log`，详细状态同时保存在 `pipeline_runs`。直接流程不再每日抓取300只成分股，成分流程可单独运行。
+安装器加载两个新任务后，停用旧的 `cn.index-valuation.daily` 全市场任务，并将旧 plist 备份到 `data/scheduler/backups/`，避免旧时段重复执行。调度使用系统时区，安装器要求系统处于 UTC+8；机器需开机、用户已登录，PostgreSQL 与已登录的 OpenD 可访问。
 
-停用当前用户任务：
+每次任务最长一小时，日志分别为 `logs/daily.asia.stdout.log` / `logs/daily.asia.stderr.log` 和 `logs/daily.us.stdout.log` / `logs/daily.us.stderr.log`，详细状态保存在 `pipeline_runs`。增量从最后已存日期回退14个自然日，可补采漏跑期间的数据；来源未发布或核验不足时保留缺口，供应商更早的修订使用 `backfill-index`。手动更新全部指数仍可使用 `make daily`。
+
+停用两个已加载的任务（再次登录会重新加载保留的 plist）：
 
 ```bash
-launchctl bootout gui/$(id -u)/cn.index-valuation.daily
+launchctl bootout gui/$(id -u)/cn.index-valuation.daily.asia
+launchctl bootout gui/$(id -u)/cn.index-valuation.daily.us
 ```
 
-Linux 可通过 cron / systemd 每个工作日 21:00、22:00 调用项目 `.venv/bin/python scripts/run_scheduled.py`，时区设为 `Asia/Shanghai`。
+Linux 可将 cron / systemd 调度时区设为 `Asia/Shanghai`，每天17:00调用项目 `.venv/bin/python scripts/run_scheduled.py --market CN HK`，每天09:00调用 `.venv/bin/python scripts/run_scheduled.py --market US`。
+
+Google Sheets 的 `Index ERP` 表另有每天北京时间08:00的独立任务，通过已有 Codex 会话的 Google Drive 连接器更新指数盈利收益率和中美国债收益率。安装、日志和验证见 [表格定时同步说明](docs/google-sheets-erp-schedule.md)。
+
+同一文件的 `Portforlio` 持仓表每天09:00同步美股价格、17:00同步中港及基金价格，均通过 Google Drive 连接器读写；原2026-10-16单次任务已改为每日任务。配置与运行记录见 [持仓报价定时同步](docs/portfolio-price-schedule.md)。
 
 ## 日常开发
 

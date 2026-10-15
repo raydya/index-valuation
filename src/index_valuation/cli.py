@@ -121,6 +121,10 @@ def main(argv: list[str] | None = None) -> int:
         selection = command_parser.add_mutually_exclusive_group(required=True)
         selection.add_argument("--index", help="indices.toml 中的指数标识，例如 csi300")
         selection.add_argument("--all", action="store_true", help="处理所有配置的指数")
+        if command == "update-index":
+            selection.add_argument(
+                "--market", nargs="+", choices=("CN", "HK", "US"), help="更新指定市场的所有指数"
+            )
         if command == "calculate":
             command_parser.add_argument("--date", type=date.fromisoformat, required=True)
             command_parser.add_argument(
@@ -170,7 +174,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "list-indices":
             print(json_text(list(specs.values())))
             return 0
-        selected = list(specs.values()) if args.all else [specs[args.index]]
+        if getattr(args, "market", None):
+            selected = [spec for spec in specs.values() if spec.market in args.market]
+            if not selected:
+                raise DataError("所选市场没有配置指数")
+        else:
+            selected = list(specs.values()) if args.all else [specs[args.index]]
         archive = Archive(settings.data_dir / "raw")
         weights_source = CSIWeights(archive)
 

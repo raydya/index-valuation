@@ -42,7 +42,7 @@ uv run --locked index-valuation status --index "$index_key"
 ## 每日增量数据流程
 
 1. **检查运行条件。** 确认系统日期、PostgreSQL 和环境配置；使用富途的指数需 OpenD 已登录且行情可用。读取已有配置及运行状态，保持凭据在 `.env` 或环境变量中，不输出或提交凭据。
-2. **确定范围并运行。** 日常全部指数使用 `update-index --all`，指定指数使用 `--index`。CLI 根据每个指数自身的时区及 `close_time` 确定截至日期，再用对应市场日历过滤交易日；不得用北京时间当天或简单工作日替代海外交易日。
+2. **确定范围并运行。** 全部指数使用 `update-index --all`，按市场使用 `update-index --market CN HK` 或 `--market US`，指定指数使用 `--index`。CLI 根据每个指数自身的时区及 `close_time` 确定截至日期，再用对应市场日历过滤交易日；不得用北京时间当天或简单工作日替代海外交易日。
 3. **保留重叠窗口。** 常规增量从当前方法最后已存日期回退14个自然日，最低不早于配置起点；这是从最后已存日期回退，不是仅取“今天往前14天”，因此停机后的缺口也能补采。当前方法尚无结果时走完整起点；支持富途但一直没有 PE 的指数也保留完整回填起点，以便权限恢复后补齐。已知不支持富途的价格专用指数正常增量。
 4. **采集、核验、重建。** 复用命令内部的任务锁、原始响应归档、来源分开存储和 upsert。`update-index` 自动重建该指数已入库的派生序列及导出，无需再手工插入 EPS 或重复调用 `build-index`。周末或源暂未更新时保持真实数据日期。
 5. **检查结果而非只看退出码。** 阅读每个指数的报告，核对最新已收盘日、各源最后日期与行数、PE/EPS 覆盖、核验状态、隔离记录及 `latest_complete_date`。退出码0表示命令正常完成，仍要检查质量；2表示存在部分完成、阻塞或失败等需查看报告的状态，数据可能已经入库；1通常表示配置/执行异常，已完成指数可能仍已保存。`collected` 不表示财务口径已独立核实。
@@ -80,17 +80,18 @@ uv run --locked index-valuation build-index --index "$index_key"
 | `pipeline_runs`、`status --index` | 任务状态与报告；检查摘要指向的详细采集报告 |
 | `data/raw/` | 按内容哈希归档的来源响应 |
 | `data/exports/` | 回填/派生报告、CSV、网页验证产物 |
-| `logs/daily.stdout.log` / `logs/daily.stderr.log` | 定时任务输出与错误日志 |
+| `logs/daily.asia.*.log` / `logs/daily.us.*.log` | 中港、美股定时任务的输出与错误日志 |
 | `/api/indices`、`/api/indices/{key}/dashboard`、`/api/indices/{key}/export.csv` | 本地网页的数据与导出接口 |
 
-macOS 调度由 [scripts/install_schedule.py](scripts/install_schedule.py) 生成，入口 [scripts/run_scheduled.py](scripts/run_scheduled.py) 执行 `update-index --all`，单次最长一小时。当前时段覆盖北京时间周一至周五21/22点、周二至周六7/8点，以脚本为准；机器需开机、用户已登录、系统时区为 UTC+8，数据服务可访问。新增配置会自动进入下一次 `--all`，无需为每个指数创建定时任务。
+macOS 调度由 [scripts/install_schedule.py](scripts/install_schedule.py) 生成，入口 [scripts/run_scheduled.py](scripts/run_scheduled.py) 按市场执行 `update-index`，单次最长一小时。北京时间每天17:00更新A股和港股、每天09:00更新美股，包含周末及节假日，数据日期仍由各市场日历过滤。新增指数按市场自动归入任务；机器需开机、用户已登录、系统时区为 UTC+8，数据服务可访问。
 
-安装或调整调度时先生成并检查 plist，再在用户已授权范围内安装；日常增量不重复安装：
+安装或调整调度时先生成并检查两个 plist，再在用户已授权范围内安装。安装器加载新任务后备份并移除旧的全市场任务；完成标准是两个新任务的市场参数、时刻与日志路径正确，旧任务已停用。日常增量不重复安装：
 
 ```bash
 make schedule
 uv run --locked python scripts/install_schedule.py --install
-launchctl print "gui/$(id -u)/cn.index-valuation.daily"
+launchctl print "gui/$(id -u)/cn.index-valuation.daily.asia"
+launchctl print "gui/$(id -u)/cn.index-valuation.daily.us"
 ```
 
 按修改范围运行必要验证；纯文档变更检查路径、命令和描述，无需触发历史采集或完整应用测试：

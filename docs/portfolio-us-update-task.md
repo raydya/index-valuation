@@ -1,0 +1,7 @@
+这是用户授权的每天北京时间09:00持仓价格同步任务（含周末和节假日）。执行本次数据更新即可，不创建或调整调度，也不修改项目代码。实际执行时间由运行器在开头提供。
+目标：https://docs.google.com/spreadsheets/d/17B0OcBwSrwkBrcM8BlEDNfbtNeL2ZsXpGX_HDr5b4kQ/edit?gid=1291175742#gid=1291175742，spreadsheetId=17B0OcBwSrwkBrcM8BlEDNfbtNeL2ZsXpGX_HDr5b4kQ，sheetId=1291175742，当前标签名为Portforlio。表格读写仅使用已连接Google Drive / Google Sheets工具及google-drive:google-sheets技能，直接更新原表。禁止使用Google CLI（gws）或其他Google CLI；连接器不可用时报告未更新，不更换为被禁止的访问方式。
+先读取元数据和有限范围的CellData，核对最新行位置、证券代码、币种、Price（当前F列）、原始报价（当前H列）、公式及校验。仅更新本任务范围内的报价和来源/实际报价日期/取数时间备注。保留数量、现金、权重、费用率、表结构、格式、旧备注和所有现有公式。F列为数字时同步同币种价格；F列为换汇或引用公式时只写H列，保留公式。不得根据旧行号盲写，价格不可比时先核对证券及份额。
+使用API、网络搜索或直接读取网页；不使用Google Chrome。取每个市场最近一个已收盘交易日的常规时段原币收盘价，排除盘前盘后价格、复权历史替代值、ETF净值替代成交价。开放式基金采用准确份额最新已公布单位净值，不采用估算净值、累计净值或其他份额。不把旧报价日期改成运行日期；不以更旧报价覆盖表内更新的数据。来源失败保留原值并明确报告。
+按现有汇率表公式自动折算，不修改汇率表。更新前重读目标，采用精确字段掩码批量写入。更新后回读报价、备注、公式和相邻计算，核对无非目标修改、无新增公式错误，市值和合计重新计算正确。汇报更新数量、报价日期、未更新原因并给出原表链接。
+
+每天09:00 Asia/Shanghai执行。仅同步表中的美股股票和美国上市ETF收盘价。目前对应TQQQ、VTI、QQQM、VOO、SGOV、IBKR（此前行8至13），以运行时表内代码为准。参考已验证公开来源：https://stockanalysis.com/etf/tqqq/history/、/etf/vti/history/、/etf/qqqm/history/、/etf/voo/history/、/etf/sgov/history/及https://stockanalysis.com/stocks/ibkr/history/。读取完整历史表的Close和At close日期时间；可使用其他可靠来源交叉核验。以执行时纽约时区的实际交易日历及收盘时间核对最近已收盘交易日，不把北京时间当天或简单工作日当作美股交易日。周末和节假日保留真实报价日期。其他市场、开放式基金和现金不属于本次更新范围。
