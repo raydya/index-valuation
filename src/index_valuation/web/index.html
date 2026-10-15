@@ -35,6 +35,27 @@
       <aside class="band-pane"><div class="band-heading"><h3 id="band-heading">倍数对应点位</h3><span id="band-date">—</span></div><table class="band-table"><thead><tr><th id="band-first-column">PE</th><th>参考点位</th><th>距收盘</th></tr></thead><tbody id="band-rows"></tbody></table><div class="band-equation"><span>计算方式</span><p id="band-equation">隐含 EPS × PE 倍数</p></div><p class="band-footnote" id="band-footnote">参考点位是指定倍数下的换算结果。</p></aside></div>
       <div class="method-bar"><span class="method-icon">i</span><p id="quality-note">采用富途指数 PE，隐含 EPS 的盈利期间跟随 PE。<a href="#method-details">查看口径与核验</a></p></div>
     </section>
+    <section id="panic-section" class="panic-section" aria-labelledby="panic-title" hidden>
+      <div class="section-heading"><div><h2 id="panic-title">PE 恐慌低点参考</h2><p id="panic-stamp"></p></div><span id="panic-status" class="panic-status"></span></div>
+      <p class="panic-intro">低估值观察线与历史触发记录，仅作研究对照，不能确认市场底部。</p>
+      <div class="panic-metrics">
+        <div class="panic-metric"><span>低 PE 观察上限</span><strong id="panic-threshold">—</strong><small id="panic-threshold-note"></small></div>
+        <div class="panic-metric"><span>所选日 PE 距观察线</span><strong id="panic-gap">—</strong><small id="panic-selected"></small></div>
+        <div class="panic-metric"><span>成熟3年信号的 PE 范围</span><strong id="panic-observed-range">—</strong><small id="panic-sample-count"></small></div>
+        <div class="panic-metric"><span>随后3年价格年化中位数</span><strong id="panic-return">—</strong><small id="panic-baseline"></small></div>
+      </div>
+      <div class="panic-context"><p id="panic-comparison-note"></p><p id="panic-risk"></p><p id="panic-alternatives"></p><ul id="panic-notes"></ul></div>
+      <details id="panic-evidence" class="panic-details">
+        <summary>历史触发记录与计算规则 <span id="panic-window-count"></span></summary>
+        <div class="table-scroll"><table class="history-table panic-table"><caption>按时间顺序保留互不重叠的3年持有窗口，非事后挑选最低点</caption><thead><tr><th>信号日</th><th>当时 PE</th><th>当时5年分位</th><th>距252日高点</th><th>3年价格年化</th><th>期间最差收盘浮亏</th><th>PE 来源对照</th></tr></thead><tbody id="panic-samples"></tbody></table></div>
+        <div class="panic-method"><p id="panic-rule"></p><p id="panic-history"></p><p>每个已结束月份取首个合格的实际 PE 观测，再判断条件；从次交易日收盘起计算回报。历史触发使用各自当时的5年分布，所以上方 PE 范围并非固定买入区间，也不是全历史 PE 极值。</p><p>月份样本会重叠；非重叠窗口也不代表统计独立。收益为本币价格回报，不含分红、费用和汇率换算；最差浮亏以观察起点为基准，使用收盘价。数据为供应商当前提供的历史版本，可能含事后修订。</p><p>观察线固定于研究日期，不随图表区间、统计窗口或每日行情更新。仅比较 PE 不代表已满足20%跌幅条件。</p></div>
+      </details>
+      <details id="panic-overview" class="panic-details">
+        <summary>全部指数观察线对照 <span>同一研究规则，保留各自来源口径</span></summary>
+        <div class="table-scroll"><table class="history-table panic-table"><caption>研究时的5年低10%观察上限；点击指数查看对应记录</caption><thead><tr><th>指数</th><th>PE 观察上限</th><th>PE 来源</th><th>数据截至</th><th>成熟3年月份</th><th>非重叠3年窗口</th></tr></thead><tbody id="panic-overview-rows"></tbody></table></div>
+      </details>
+      <div class="panic-footer"><span>固定研究记录 · 日常更新保留</span><a href="/api/panic-reference" id="panic-download">下载研究记录 JSON</a></div>
+    </section>
     <section class="history-section" aria-labelledby="history-title"><div class="section-heading"><div><h2 id="history-title">逐日数据</h2><p id="table-description">历史行情与估值</p></div><span id="table-range"></span></div><div class="table-scroll"><table class="history-table"><thead><tr><th>交易日</th><th>收盘点位</th><th>指数 PE</th><th>历史平均 PE</th><th>隐含 EPS</th><th>PB</th><th>PS</th><th>独立参考 PE</th><th>PE 数值比较</th><th>点位来源</th></tr></thead><tbody id="history-rows"></tbody></table></div><div class="pagination"><span id="page-info">—</span><div><button type="button" id="previous-page">上一页</button><button type="button" id="next-page">下一页</button></div></div></section>
     <details id="method-details" class="method-details"><summary>数据覆盖与计算口径 <span>来源、完整性和历史统计规则</span></summary><div class="method-content"><div><h3>数据覆盖</h3><dl id="coverage"></dl></div><div><h3>如何理解这张图</h3><p id="basis-note"></p><p id="return-method">年化收益 = [(期末点位 ÷ 期初点位)^(365.25 ÷ 实际相隔天数) − 1] × 100%。采用图表所选区间内首末可用收盘点位，按实际日期计算，不含分红、交易费用或汇率换算。少于一年时为折算值；历史回看只使用所选日期及之前的数据。此项独立于 PE 统计窗口和估值核验，单源价格会标明未核验，端点价格存在重大差异时留空。</p><p>平均 PE 为统计窗口内、同一主源有效正 PE 的算术平均；按各指数标注的日度或周度规则采样，排除当天和未来数据。分位相等值取中间排名；样本不足时均值和分位留空。平均点位 = 当日隐含 EPS × 当时的历史平均 PE。</p><p>发布前记录标为回溯数据。点位通过对应市场的来源交叉核验；缺失 PE 不填充，价格核验未通过时不生成 EPS 或点位 band。美股新增 PE 主源与对照相差超过5%的当日记录，只保留原值展示，不参与 EPS、band 或后续历史统计。来源数值接近也不代表盈利、加权和亏损处理完全相同。</p></div></div></details>
     <footer><span>指数估值研究</span><span id="footer-range">数据来自富途、指数发布机构及独立行情源</span></footer>

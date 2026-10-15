@@ -1,0 +1,711 @@
+{
+  "schema_version": 1,
+  "study_date": "2026-10-14",
+  "analysis_at": "2026-10-14T12:08:47.490222+00:00",
+  "input_observed_at": "2026-10-14T19:54:39.661608+08:00",
+  "summary_sha256": "b51090448630eac222a2c46d60b1339b8931d0582b176b827f358fd22f6ab004",
+  "research_code_sha256": {
+    "scripts/analyze_panic_ranges.py": "0a216d4f0d1b5a6b451fee4e8a79663d22014b6d51c890df78645e06100a97d2",
+    "src/index_valuation/panic_study.py": "29d945c09f3bfc19c6be80dd591db5420eb175929afc788c974cf305aa4c54b8",
+    "src/index_valuation/index_series.py": "dbc8509d4f8f6f4a90f6db4881f8bbd4756f104045996277dd9a68fd9bb58452",
+    "src/index_valuation/valuation.py": "471069cd47419ec702f5aa95165caf93a54acb960143c40bf49d91b5464870c5"
+  },
+  "rule": "当时此前5年 PE 分位 ≤10%，且较近252个价格交易日收盘高点下跌 ≥20%。",
+  "protocol": {
+    "main_rule": "past_5y_PE_percentile<=10 AND price/prior_252_session_peak-1<=-20%",
+    "rules_fixed_before_outcomes": {
+      "all": [
+        null,
+        null,
+        null
+      ],
+      "pe_p05": [
+        "5",
+        null,
+        null
+      ],
+      "pe_p10": [
+        "10",
+        null,
+        null
+      ],
+      "pe_p20": [
+        "20",
+        null,
+        null
+      ],
+      "drawdown20": [
+        null,
+        "-0.20",
+        null
+      ],
+      "panic_p05_dd20": [
+        "5",
+        "-0.20",
+        null
+      ],
+      "panic_p10_dd20": [
+        "10",
+        "-0.20",
+        null
+      ],
+      "panic_p20_dd20": [
+        "20",
+        "-0.20",
+        null
+      ],
+      "mean80": [
+        null,
+        null,
+        "0.8"
+      ],
+      "mean80_dd20": [
+        null,
+        "-0.20",
+        "0.8"
+      ]
+    },
+    "sampling": "first eligible actual PE observation each completed month",
+    "entry": "next recorded trading session close; bad endpoints excluded, not skipped",
+    "history": "complete 5/3/10 calendar years since first usable post-launch PE",
+    "quality": "verified endpoints, >=95% verified path, no price errors or gaps >14 days",
+    "pe_policy": "existing provider policy; separate exclusion-of-known-errors sensitivity",
+    "returns": "price return only; Decimal, actual days/365.25; no dividends/fees/FX",
+    "data_vintage": "retrospective vendor series, not original publication-vintage data",
+    "era": "pre2020 requires exit before 2020; 2020plus requires entry from 2020"
+  },
+  "indices": {
+    "csi300": {
+      "name": "沪深300",
+      "source": "futu",
+      "basis": "futu_valuation_pe",
+      "method": "futu_index_implied_v1",
+      "cutoff": "2026-10-14",
+      "input_sha256": "49bd3b1328df9420ca655e1e13bb96e89c95140103ca3dcaab7e3e81f92d1edf",
+      "status": "reference",
+      "threshold_pe": "10.90400000000000000",
+      "threshold_to_mean": "0.8772447404155583251176547184",
+      "history_start": "2021-10-14",
+      "history_end": "2026-10-13",
+      "history_count": 1211,
+      "history_complete": true,
+      "pe_rows": 5287,
+      "pe_quality": {
+        "missing": 1640,
+        "error": 2319,
+        "warning": 1006,
+        "pass": 322
+      },
+      "one_year": {
+        "n": 19,
+        "median_annualized_return": "-0.0230206903021313945776573523786104",
+        "worst_loss_from_entry": "-0.2136295256457718554532439991525950",
+        "observed_pe_range": [
+          "7.5640000000000000",
+          "13.6670000000000000"
+        ]
+      },
+      "three_year": {
+        "n": 18,
+        "median_annualized_return": "0.1172336074713486931523241133",
+        "worst_loss_from_entry": "-0.2781354648279091515588625015531974",
+        "observed_pe_range": [
+          "7.5640000000000000",
+          "13.6670000000000000"
+        ],
+        "nonoverlap": {
+          "n": 3
+        },
+        "nonoverlap_samples": [
+          {
+            "signal_date": "2010-09-01",
+            "signal_pe": "13.6670000000000000",
+            "percentile": "7.806080525883319638455217749",
+            "signal_drawdown": "-0.2139073143714402839922896442",
+            "entry_date": "2010-09-02",
+            "exit_date": "2013-09-02",
+            "annualized_return": "-0.0738917848795226918705670162508946",
+            "lowest_return_from_entry": "-0.2781354648279091515588625015531974",
+            "pe_comparison_status": "missing"
+          },
+          {
+            "signal_date": "2014-02-07",
+            "signal_pe": "7.5640000000000000",
+            "percentile": "0.1650165016501650165016501650",
+            "signal_drawdown": "-0.2029512465397911410007190606",
+            "entry_date": "2014-02-10",
+            "exit_date": "2017-02-10",
+            "annualized_return": "0.146044043135411135031157272965271",
+            "lowest_return_from_entry": "-0.0796314410280066362841747907638871",
+            "pe_comparison_status": "error"
+          },
+          {
+            "signal_date": "2022-10-10",
+            "signal_pe": "10.8380000000000000",
+            "percentile": "6.919275123558484349258649094",
+            "signal_drawdown": "-0.2680797852677426949486827837",
+            "entry_date": "2022-10-11",
+            "exit_date": "2025-10-13",
+            "annualized_return": "0.071982915639320544814061647690478",
+            "lowest_return_from_entry": "-0.1524912756214195790649466329882283",
+            "pe_comparison_status": "warning"
+          }
+        ]
+      },
+      "baseline_three_year": {
+        "n": 163,
+        "median_annualized_return": "0.046206599398997160877691164505313"
+      },
+      "reference_thresholds": [
+        {
+          "source": "csindex",
+          "cutoff": "2026-10-14",
+          "threshold_pe": "11.19000000000000000"
+        }
+      ],
+      "notes": [
+        "3年结果有参考，但只有3个非重叠窗口；2010年入场窗口持有3年仍亏损。样本中的来源分歧尚未完全解释。"
+      ]
+    },
+    "csia500": {
+      "name": "中证A500",
+      "source": "futu",
+      "basis": "futu_valuation_pe",
+      "method": "futu_index_implied_v1",
+      "cutoff": "2026-10-14",
+      "input_sha256": "06f7a05b32a242f4fd8e016270421972199e100c52d9f1a48cf11214aa999dbf",
+      "status": "insufficient_history",
+      "threshold_pe": null,
+      "threshold_to_mean": null,
+      "history_start": "2024-09-23",
+      "history_end": "2026-10-13",
+      "history_count": 495,
+      "history_complete": false,
+      "pe_rows": 496,
+      "pe_quality": {
+        "warning": 307,
+        "pass": 6,
+        "error": 182,
+        "missing": 1
+      },
+      "one_year": {
+        "n": 0,
+        "median_annualized_return": null,
+        "worst_loss_from_entry": null,
+        "observed_pe_range": null
+      },
+      "three_year": {
+        "n": 0,
+        "median_annualized_return": null,
+        "worst_loss_from_entry": null,
+        "observed_pe_range": null,
+        "nonoverlap": {
+          "n": 0
+        },
+        "nonoverlap_samples": []
+      },
+      "baseline_three_year": {
+        "n": 0,
+        "median_annualized_return": null
+      },
+      "reference_thresholds": [],
+      "notes": [
+        "PE 历史始于2024年9月，尚未覆盖完整5年；暂不设定恐慌观察线。"
+      ]
+    },
+    "sse": {
+      "name": "上证指数",
+      "source": "futu",
+      "basis": "futu_valuation_pe",
+      "method": "futu_index_implied_v1",
+      "cutoff": "2026-10-14",
+      "input_sha256": "3278d74d7dfed2f7f602fefd284f9a669ee04c54dc114223f0f355e9e83e6f0c",
+      "status": "reference",
+      "threshold_pe": "12.29800000000000000",
+      "threshold_to_mean": "0.8722671875908741116556830459",
+      "history_start": "2021-10-14",
+      "history_end": "2026-10-13",
+      "history_count": 1211,
+      "history_complete": true,
+      "pe_rows": 7272,
+      "pe_quality": {
+        "missing": 3627,
+        "error": 2476,
+        "warning": 1118,
+        "pass": 51
+      },
+      "one_year": {
+        "n": 35,
+        "median_annualized_return": "0.063234922426305637424494561810783",
+        "worst_loss_from_entry": "-0.2596577518188338969156675888923045",
+        "observed_pe_range": [
+          "9.7520000000000000",
+          "25.6550000000000000"
+        ]
+      },
+      "three_year": {
+        "n": 35,
+        "median_annualized_return": "0.182737520254871146010613307876604",
+        "worst_loss_from_entry": "-0.2657464334341450483775740122660947",
+        "observed_pe_range": [
+          "9.7520000000000000",
+          "25.6550000000000000"
+        ],
+        "nonoverlap": {
+          "n": 3
+        },
+        "nonoverlap_samples": [
+          {
+            "signal_date": "2004-08-02",
+            "signal_pe": "25.6550000000000000",
+            "percentile": "0",
+            "signal_drawdown": "-0.2274517305009226337818983753",
+            "entry_date": "2004-08-03",
+            "exit_date": "2007-08-03",
+            "annualized_return": "0.494931367393669913792041543522943",
+            "lowest_return_from_entry": "-0.2596577518188338969156675888923045",
+            "pe_comparison_status": "missing"
+          },
+          {
+            "signal_date": "2008-09-01",
+            "signal_pe": "16.8750000000000000",
+            "percentile": "3.786008230452674897119341564",
+            "signal_drawdown": "-0.6183333478330882327594768073",
+            "entry_date": "2008-09-02",
+            "exit_date": "2011-09-02",
+            "annualized_return": "0.031337394228601082982292680722586",
+            "lowest_return_from_entry": "-0.2595298432767536512572611893577614",
+            "pe_comparison_status": "missing"
+          },
+          {
+            "signal_date": "2011-10-10",
+            "signal_pe": "11.4090000000000000",
+            "percentile": "0",
+            "signal_drawdown": "-0.2578641891532616429372637293",
+            "entry_date": "2011-10-11",
+            "exit_date": "2014-10-13",
+            "annualized_return": "0.002471623869397080354478151123891",
+            "lowest_return_from_entry": "-0.1696828976255643989651337270003696",
+            "pe_comparison_status": "error"
+          }
+        ]
+      },
+      "baseline_three_year": {
+        "n": 248,
+        "median_annualized_return": "0.03053334872981395825803770596"
+      },
+      "reference_thresholds": [
+        {
+          "source": "csindex",
+          "cutoff": "2026-10-14",
+          "threshold_pe": "11.54000000000000000"
+        }
+      ],
+      "notes": [
+        "成熟3年信号全部集中于2004—2012年；2020年后没有成熟触发，不能直接外推到当前市场。"
+      ]
+    },
+    "chinext": {
+      "name": "创业板指",
+      "source": "futu",
+      "basis": "futu_valuation_pe",
+      "method": "futu_index_implied_v1",
+      "cutoff": "2026-10-14",
+      "input_sha256": "a95acb6ba499f840afe0650c6d17673f005365af47b89cc9d7add2d8160124b9",
+      "status": "reference",
+      "threshold_pe": "28.27900000000000000",
+      "threshold_to_mean": "0.7007669484253320097164821462",
+      "history_start": "2021-10-14",
+      "history_end": "2026-10-13",
+      "history_count": 1211,
+      "history_complete": true,
+      "pe_rows": 3973,
+      "pe_quality": {
+        "missing": 3973
+      },
+      "one_year": {
+        "n": 21,
+        "median_annualized_return": "0.159157088208644537545811570599088",
+        "worst_loss_from_entry": "-0.3057845366812897364892130605691695",
+        "observed_pe_range": [
+          "23.5720000000000000",
+          "35.2180000000000000"
+        ]
+      },
+      "three_year": {
+        "n": 10,
+        "median_annualized_return": "0.2489070401741981287261364687",
+        "worst_loss_from_entry": "-0.3146807549165019907088908180936802",
+        "observed_pe_range": [
+          "30.8100000000000000",
+          "35.2180000000000000"
+        ],
+        "nonoverlap": {
+          "n": 2
+        },
+        "nonoverlap_samples": [
+          {
+            "signal_date": "2018-10-08",
+            "signal_pe": "34.5590000000000000",
+            "percentile": "0.8190008190008190008190008190",
+            "signal_drawdown": "-0.2971863490187812098600572979",
+            "entry_date": "2018-10-09",
+            "exit_date": "2021-10-11",
+            "annualized_return": "0.333350450778550465906620551465132",
+            "lowest_return_from_entry": "-0.1047000388646644120554905086932104",
+            "pe_comparison_status": "missing"
+          },
+          {
+            "signal_date": "2023-06-01",
+            "signal_pe": "34.6130000000000000",
+            "percentile": "6.260296540362438220757825371",
+            "signal_drawdown": "-0.2257353803236593870026648717",
+            "entry_date": "2023-06-02",
+            "exit_date": "2026-06-02",
+            "annualized_return": "0.220003141085519949441369485378156",
+            "lowest_return_from_entry": "-0.3146807549165019907088908180936802",
+            "pe_comparison_status": "missing"
+          }
+        ]
+      },
+      "baseline_three_year": {
+        "n": 101,
+        "median_annualized_return": "0.035999779224591435184419048037429"
+      },
+      "reference_thresholds": [],
+      "notes": [
+        "仅2个非重叠3年窗口，缺独立 PE 历史核验；将历史窗口由5年改为3年，随后1年结果会由正转负。"
+      ]
+    },
+    "star50": {
+      "name": "科创50",
+      "source": "futu",
+      "basis": "futu_valuation_pe",
+      "method": "futu_index_implied_v1",
+      "cutoff": "2026-10-14",
+      "input_sha256": "12d574b8f885b6bd557478729bbd2bfc2e6191acb8d7caae441b186c30a28e0a",
+      "status": "reference",
+      "threshold_pe": "41.37100000000000000",
+      "threshold_to_mean": "0.4944127771492498768983234774",
+      "history_start": "2021-10-14",
+      "history_end": "2026-10-13",
+      "history_count": 1211,
+      "history_complete": true,
+      "pe_rows": 1641,
+      "pe_quality": {
+        "missing": 121,
+        "warning": 64,
+        "error": 1456
+      },
+      "one_year": {
+        "n": 0,
+        "median_annualized_return": null,
+        "worst_loss_from_entry": null,
+        "observed_pe_range": null
+      },
+      "three_year": {
+        "n": 0,
+        "median_annualized_return": null,
+        "worst_loss_from_entry": null,
+        "observed_pe_range": null,
+        "nonoverlap": {
+          "n": 0
+        },
+        "nonoverlap_samples": []
+      },
+      "baseline_three_year": {
+        "n": 0,
+        "median_annualized_return": null
+      },
+      "reference_thresholds": [
+        {
+          "source": "csindex",
+          "cutoff": "2026-10-14",
+          "threshold_pe": "28.07000000000000000"
+        }
+      ],
+      "notes": [
+        "完整5年规则暂无成熟样本。1,641条 PE 中有1,456条同日对照差异超过5%；富途和中证的观察线相差较大，不宜认定固定恐慌倍数。"
+      ]
+    },
+    "hstech": {
+      "name": "恒生科技",
+      "source": "futu",
+      "basis": "futu_valuation_pe",
+      "method": "futu_index_implied_v1",
+      "cutoff": "2026-10-13",
+      "input_sha256": "732d91f492353e1023f25cc68ebb8797b03914997970de587c899ef7f87017b1",
+      "status": "reference",
+      "threshold_pe": "20.42920000000000000",
+      "threshold_to_mean": "0.7166380801968409592222970692",
+      "history_start": "2021-10-15",
+      "history_end": "2026-10-12",
+      "history_count": 1227,
+      "history_complete": true,
+      "pe_rows": 1529,
+      "pe_quality": {
+        "missing": 1529
+      },
+      "one_year": {
+        "n": 0,
+        "median_annualized_return": null,
+        "worst_loss_from_entry": null,
+        "observed_pe_range": null
+      },
+      "three_year": {
+        "n": 0,
+        "median_annualized_return": null,
+        "worst_loss_from_entry": null,
+        "observed_pe_range": null,
+        "nonoverlap": {
+          "n": 0
+        },
+        "nonoverlap_samples": []
+      },
+      "baseline_three_year": {
+        "n": 0,
+        "median_annualized_return": null
+      },
+      "reference_thresholds": [],
+      "notes": [
+        "完整5年规则暂无成熟样本；缩短历史窗口后仍主要来自一轮行情，且缺独立 PE 历史核验。"
+      ]
+    },
+    "divlowvol": {
+      "name": "红利低波",
+      "source": "csindex",
+      "basis": "csindex_published_rolling_pe",
+      "method": "csindex_index_implied_daily_v1",
+      "cutoff": "2026-10-13",
+      "input_sha256": "9faa3f91e45607c105dd421a2b47f7a9b3483130a5e8334daa9181eba7862512",
+      "status": "reference",
+      "threshold_pe": "5.08000000000000000",
+      "threshold_to_mean": "0.8001450521038783444682968419",
+      "history_start": "2021-10-13",
+      "history_end": "2026-10-12",
+      "history_count": 1138,
+      "history_complete": true,
+      "pe_rows": 3123,
+      "pe_quality": {
+        "missing": 2610,
+        "error": 105,
+        "warning": 338,
+        "pass": 70
+      },
+      "one_year": {
+        "n": 1,
+        "median_annualized_return": "0.186369530881040014064544551478224",
+        "worst_loss_from_entry": "-0.0035262839386130131164707242277329",
+        "observed_pe_range": [
+          "6.3400000000000000",
+          "6.3400000000000000"
+        ]
+      },
+      "three_year": {
+        "n": 1,
+        "median_annualized_return": "0.099740491924745224085972821237812",
+        "worst_loss_from_entry": "-0.0035262839386130131164707242277329",
+        "observed_pe_range": [
+          "6.3400000000000000",
+          "6.3400000000000000"
+        ],
+        "nonoverlap": {
+          "n": 1
+        },
+        "nonoverlap_samples": [
+          {
+            "signal_date": "2020-04-01",
+            "signal_pe": "6.3400000000000000",
+            "percentile": "0.4621848739495798319327731092",
+            "signal_drawdown": "-0.2042331777023357761536015664",
+            "entry_date": "2020-04-02",
+            "exit_date": "2023-04-03",
+            "annualized_return": "0.099740491924745224085972821237812",
+            "lowest_return_from_entry": "-0.0035262839386130131164707242277329",
+            "pe_comparison_status": "missing"
+          }
+        ]
+      },
+      "baseline_three_year": {
+        "n": 59,
+        "median_annualized_return": "0.058866403532855189552769698737487"
+      },
+      "reference_thresholds": [
+        {
+          "source": "danjuan",
+          "cutoff": "2026-10-13",
+          "threshold_pe": "4.98760000000000000"
+        }
+      ],
+      "notes": [
+        "仅1个成熟触发，证据不足以确认稳定区间。这里是价格回报，不含红利再投资。",
+        "本研究按当时规则剔除了 PE 重大差异日；现行官方口径统计保留这些日期。此处保留旧研究数值，尚未按新规则重算。"
+      ]
+    },
+    "sp500": {
+      "name": "标普500",
+      "source": "danjuan",
+      "basis": "danjuan_published_pe_ttm",
+      "method": "danjuan_index_implied_weekly_v1",
+      "cutoff": "2026-10-13",
+      "input_sha256": "f9fa59a2bd1bdb15ba4bacdd9ab45585c76ade6a6ffe91ef3e9ca29a8eb6db52",
+      "status": "reference",
+      "threshold_pe": "20.81240000000000000",
+      "threshold_to_mean": "0.8176527218460458578049600901",
+      "history_start": "2021-10-13",
+      "history_end": "2026-10-08",
+      "history_count": 231,
+      "history_complete": true,
+      "pe_rows": 471,
+      "pe_quality": {
+        "missing": 469,
+        "error": 2
+      },
+      "one_year": {
+        "n": 2,
+        "median_annualized_return": "0.1823830279983299369444535101",
+        "worst_loss_from_entry": "-0.0207778869547898113634243092399785",
+        "observed_pe_range": [
+          "18.6874000000000000",
+          "19.4481000000000000"
+        ]
+      },
+      "three_year": {
+        "n": 2,
+        "median_annualized_return": "0.2202785866515904245931545398",
+        "worst_loss_from_entry": "-0.0207778869547898113634243092399785",
+        "observed_pe_range": [
+          "18.6874000000000000",
+          "19.4481000000000000"
+        ],
+        "nonoverlap": {
+          "n": 1
+        },
+        "nonoverlap_samples": [
+          {
+            "signal_date": "2022-10-10",
+            "signal_pe": "18.6874000000000000",
+            "percentile": "1.282051282051282051282051282",
+            "signal_drawdown": "-0.2468790448884317017963821933",
+            "entry_date": "2022-10-11",
+            "exit_date": "2025-10-13",
+            "annualized_return": "0.228029268505910213563400702555772",
+            "lowest_return_from_entry": "-0.0032907731480149271875454297648098",
+            "pe_comparison_status": "missing"
+          }
+        ]
+      },
+      "baseline_three_year": {
+        "n": 25,
+        "median_annualized_return": "0.186625818148748608840585914628232"
+      },
+      "reference_thresholds": [],
+      "notes": [
+        "2个成熟月份均来自2022年，实质仅1个非重叠窗口；缺独立历史 PE 核验，不能据此估计未来胜率。"
+      ]
+    },
+    "nasdaq100": {
+      "name": "纳斯达克100",
+      "source": "danjuan",
+      "basis": "danjuan_published_pe_ttm",
+      "method": "danjuan_index_implied_weekly_v1",
+      "cutoff": "2026-10-13",
+      "input_sha256": "159bf16076d6b1d1ac59884832e54b4622dd056324f6b87d73abafe71e8a0627",
+      "status": "reference",
+      "threshold_pe": "26.09710000000000000",
+      "threshold_to_mean": "0.7927713485206861080625958526",
+      "history_start": "2021-10-13",
+      "history_end": "2026-10-08",
+      "history_count": 231,
+      "history_complete": true,
+      "pe_rows": 470,
+      "pe_quality": {
+        "missing": 469,
+        "error": 1
+      },
+      "one_year": {
+        "n": 2,
+        "median_annualized_return": "0.3581075968159336573159902894",
+        "worst_loss_from_entry": "-0.0907323037312079448343506465309890",
+        "observed_pe_range": [
+          "23.4820000000000000",
+          "24.0396000000000000"
+        ]
+      },
+      "three_year": {
+        "n": 2,
+        "median_annualized_return": "0.2829636929181461426894288016",
+        "worst_loss_from_entry": "-0.0907323037312079448343506465309890",
+        "observed_pe_range": [
+          "23.4820000000000000",
+          "24.0396000000000000"
+        ],
+        "nonoverlap": {
+          "n": 1
+        },
+        "nonoverlap_samples": [
+          {
+            "signal_date": "2022-07-11",
+            "signal_pe": "24.0396000000000000",
+            "percentile": "9.871244635193133047210300429",
+            "signal_drawdown": "-0.2843759918037040210361942735",
+            "entry_date": "2022-07-12",
+            "exit_date": "2025-07-14",
+            "annualized_return": "0.247908323507129182116474352839148",
+            "lowest_return_from_entry": "-0.0907323037312079448343506465309890",
+            "pe_comparison_status": "missing"
+          }
+        ]
+      },
+      "baseline_three_year": {
+        "n": 25,
+        "median_annualized_return": "0.246518468246327550468254879441907"
+      },
+      "reference_thresholds": [],
+      "notes": [
+        "2个成熟月份均来自2022年，实质仅1个非重叠窗口；改为最低5%条件后无成熟3年样本，阈值敏感。"
+      ]
+    },
+    "ustotal": {
+      "name": "美国全市场",
+      "source": "none",
+      "basis": null,
+      "method": "index_price_only_v1",
+      "cutoff": "2026-10-13",
+      "input_sha256": "1e37fa9eac31aac0e149d4f72a219818c46a59a935693c94d2adb89167dc565e",
+      "status": "missing_pe",
+      "threshold_pe": null,
+      "threshold_to_mean": null,
+      "history_start": null,
+      "history_end": null,
+      "history_count": 0,
+      "history_complete": false,
+      "pe_rows": 0,
+      "pe_quality": {},
+      "one_year": {
+        "n": 0,
+        "median_annualized_return": null,
+        "worst_loss_from_entry": null,
+        "observed_pe_range": null
+      },
+      "three_year": {
+        "n": 0,
+        "median_annualized_return": null,
+        "worst_loss_from_entry": null,
+        "observed_pe_range": null,
+        "nonoverlap": {
+          "n": 0
+        },
+        "nonoverlap_samples": []
+      },
+      "baseline_three_year": {
+        "n": 0,
+        "median_annualized_return": null
+      },
+      "reference_thresholds": [],
+      "notes": [
+        "VTI 对应的美国全市场指数目前只有价格，没有可用指数 PE；不能借用 ETF 持仓 PE 推算恐慌线。"
+      ]
+    }
+  }
+}

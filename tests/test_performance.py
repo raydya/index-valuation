@@ -82,6 +82,16 @@ def test_single_source_prices_and_backcast_are_visible_independent_of_pe_quality
     assert result["annualized_return_pct"] is not None
 
 
+def test_authoritative_price_allows_return_while_retaining_material_difference():
+    rows = [
+        point("2020-01-01", "100", price_status="error", price_usable=True),
+        point("2024-01-01", "146.41"),
+    ]
+    result = price_return_summary(rows, date(2020, 1, 1), date(2024, 1, 1))
+    assert result["status"] == "ok" and result["price_status"] == "error"
+    assert abs(result["annualized_return_pct"] - 10) < Decimal("1e-25")
+
+
 def test_return_follows_chart_window_and_historical_date_not_pe_statistics_window():
     rows = [
         point("2010-01-04", "50"),

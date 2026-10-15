@@ -80,12 +80,14 @@ def test_csi_primary_pe_never_compares_to_itself_or_uses_another_basis():
     assert method_for(SPEC) != method_for(load_indices()["csi300"])
 
 
-def test_csi_material_pe_difference_blocks_only_that_day_without_filling_reference():
+def test_csi_material_pe_difference_keeps_official_bands_and_statistics():
     prices, pe, reference = inputs()
     reference = replace(reference, value=Decimal(10))
-    bad = derive_points(SPEC, prices, [pe, reference])[0]
-    assert bad["pe"] == 8 and bad["reference_pe_source"] == "danjuan"
-    assert not bad["pe_usable"] and bad["implied_eps"] is None
+    compared = derive_points(SPEC, prices, [pe, reference])[0]
+    assert compared["pe"] == 8 and compared["reference_pe_source"] == "danjuan"
+    assert compared["pe_comparison_status"] == "error"
+    assert compared["reference_pe"] == 10 and compared["pe_relative_error"] == Decimal("0.25")
+    assert compared["pe_usable"] and compared["implied_eps"] == 125
     next_day = date(2026, 10, 13)
     good = derive_points(
         SPEC,
@@ -93,9 +95,45 @@ def test_csi_material_pe_difference_blocks_only_that_day_without_filling_referen
         [replace(pe, trade_date=next_day)],
     )[0]
     assert good["reference_pe"] is None and good["implied_eps"] == 125
-    dashboard = build_dashboard(SPEC, [bad, good])
-    assert dashboard["selected"]["history_count"] == 0
+    dashboard = build_dashboard(replace(SPEC, band_min_observations=1), [compared, good])
+    assert dashboard["selected"]["history_count"] == 1
+    assert dashboard["selected"]["mean_pe"] == 8
+    assert dashboard["selected"]["percentile"] == 50
     assert dashboard["selected"]["fixed"]["8"] == 1000
+
+
+@pytest.mark.parametrize("reference_prices", [[], [("eastmoney", 2000), ("futu", 1500)]])
+def test_official_close_wins_without_overwriting_price_comparison(reference_prices):
+    prices, pe, _ = inputs()
+    prices = [
+        prices[0],
+        *(replace(prices[0], source=s, price=Decimal(v)) for s, v in reference_prices),
+    ]
+    point = derive_points(SPEC, prices, [pe])[0]
+    assert point["price"] == 1000 and point["price_source"] == "csindex"
+    assert point["price_status"] == ("error" if reference_prices else "unverified")
+    assert point["price_usable"] and point["implied_eps"] == 125
+    assert point["source_prices"] == {p.source: p.price for p in prices}
+    assert point["price_artifacts"]["csindex"] == "csi.json"
+    assert build_dashboard(SPEC, [point])["selected"]["fixed"]["8"] == 1000
+
+
+def test_missing_official_close_does_not_authorize_unverified_third_party_price():
+    prices, pe, _ = inputs()
+    point = derive_points(SPEC, prices[1:], [pe])[0]
+    assert point["price_source"] == "eastmoney" and point["pe"] == 8
+    assert not point["price_usable"] and point["implied_eps"] is None
+
+
+@pytest.mark.parametrize("value", [Decimal(0), Decimal("NaN"), Decimal("Infinity")])
+def test_invalid_official_pe_cannot_be_replaced_by_valid_reference(value):
+    prices, pe, reference = inputs()
+    point = derive_points(SPEC, prices, [replace(pe, value=value), reference])[0]
+    assert point["pe"] is None and point["implied_eps"] is None
+
+
+def test_official_priority_has_a_new_method_version():
+    assert method_for(SPEC) == "csindex_index_implied_daily_v2"
 
 
 def test_csi_statistics_use_daily_primary_pe_not_weekly_reference():

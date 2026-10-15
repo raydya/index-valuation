@@ -58,7 +58,7 @@ def valuation_profile(spec):
 def method_for(spec):
     return {
         "futu": METHOD,
-        "csindex": "csindex_index_implied_daily_v1",
+        "csindex": "csindex_index_implied_daily_v2",
         "danjuan": "danjuan_index_implied_weekly_v1",
         "none": "index_price_only_v1",
     }[spec.valuation_source]
@@ -70,8 +70,9 @@ def basis_note(spec):
             "采用中证指数官方发布的滚动 PE；官方单张注明指数指标按成分的计算用股本计算。"
             "隐含 EPS = 同日价格指数点位 / 官方 PE，单位为指数点。"
             "雪球基金 PE 单独对照，盈利、权重及亏损处理的差异尚未完整核实。"
-            "同日 PE 差异超过5%时暂停该日 EPS/band，并排除该 PE 的统计贡献；"
-            "无独立 PE 对照的日期仅作官方口径参考，不混入参考源历史，不填补缺失值。"
+            "官方 PE 与点位优先；第三方差异或缺少对照不阻止官方数据参与 EPS、band 和历史统计。"
+            "保留各来源原值与差异标记，不将采用官方值视为独立核验通过。"
+            "缺失官方 PE 不使用第三方替补，不混入参考源历史，不填补缺失值。"
         )
     if spec.valuation_source == "danjuan":
         return (
@@ -135,7 +136,8 @@ def derive_points(spec, observations, valuations):
         available = {
             source: prices[(day, source)] for source in PRICE_SOURCES if (day, source) in prices
         }
-        price_row = next(iter(available.values()), None)
+        official_price = available.get("csindex") if spec.valuation_source == "csindex" else None
+        price_row = official_price or next(iter(available.values()), None)
         if price_row and price_row.quote_at > now:
             continue
         price = price_row.price if price_row else None
@@ -170,14 +172,11 @@ def derive_points(spec, observations, valuations):
             key=lambda pair: pair[1].relative_error or Decimal(0),
             default=(None, compare_value(spec.quote_code, "pe", pe, None)),
         )
-        eps = price / pe if pe is not None and price_status in {"pass", "warning"} else None
-        # Alternative PE is allowed, but a known material discrepancy must not
-        # silently become a valuation band. Keep the raw PE visible for review.
-        pe_usable = not (
-            spec.valuation_source in {"danjuan", "csindex"} and pe_check.status == "error"
-        )
-        if not pe_usable:
-            eps = None
+        # Official inputs remain authoritative when third-party comparisons
+        # disagree or are missing. Preserve comparison status separately.
+        price_usable = official_price is not None or price_status in {"pass", "warning"}
+        pe_usable = not (spec.valuation_source == "danjuan" and pe_check.status == "error")
+        eps = price / pe if pe is not None and price_usable and pe_usable else None
         extras = {}
         for metric in ("pb", "ps"):
             row = values.get((day, "futu", metric, f"futu_valuation_{metric}"))
@@ -194,6 +193,7 @@ def derive_points(spec, observations, valuations):
                 "pe_basis": profile["basis"] if pe_row else None,
                 "basis_status": "unconfirmed",
                 "price_status": price_status,
+                "price_usable": price_usable,
                 "pe_comparison_status": pe_check.status,
                 "pe_usable": pe_usable,
                 "reference_pe": reference.value if reference else None,
@@ -319,6 +319,7 @@ def build_dashboard(spec, points, *, as_of=None, chart_years=5, history_years=5)
                             "pe_basis",
                             "basis_status",
                             "price_status",
+                            "price_usable",
                             "pe_comparison_status",
                             "pe_usable",
                             "reference_pe",
@@ -401,6 +402,7 @@ def series_csv(dashboard):
         "pe_basis",
         "basis_status",
         "price_status",
+        "price_usable",
         "reference_pe",
         "reference_pe_source",
         "reference_pe_basis",

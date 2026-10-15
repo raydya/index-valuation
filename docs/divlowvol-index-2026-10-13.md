@@ -2,6 +2,8 @@
 
 核验日期：2026-10-13，北京时间收盘后。配置 key：`divlowvol`；[网页入口](http://127.0.0.1:8000/?index=divlowvol)。
 
+本文原接入结果记录2026-10-13的 v1 行为；2026-10-14按用户要求改为官方数据优先，当前规则见文末修订，旧覆盖与阻断结论不代表 v2 结果。
+
 ## 指数身份与来源
 
 接入中证红利低波动指数，简称红利低波，代码 **H30269**，人民币价格指数，50只成分、股息率加权。正式发布日2013-12-19，基日2005-12-30，基点1000。全收益版本代码为 **H20269**，本项目未混用该序列。依据：[中证官方单张](https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/indices/detail/files/zh_CN/H30269factsheet.pdf)、[官方编制方案](https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/indices/detail/files/zh_CN/H30269_Index_Methodology_cn.pdf)。本次下载单张的数据日期为2026-09-30，编制方案标注2020-12、V1.1。
@@ -64,3 +66,18 @@ uv run --locked index-valuation status --index divlowvol
 验证包括错误指数映射、价格版与全收益版隔离、官方 PE 不与自身对照、缺失值不替补、重大差异隔离、日度统计不受参考源周采样影响，以及不支持报价时交易日历仍可使用。单元测试116项和 PostgreSQL 集成测试15项通过，Ruff 静态与格式检查通过。
 
 WebKit 对全部10个指数的切换、刷新、PE/分位/平均 band、日期回看、CSV 和手机布局检查通过；红利低波的重大差异提示及回看最近可用 band 的入口实际可用，CSV 与 API 数值一致，无 JavaScript 错误。报告见 `data/exports/web-validation.json`，截图为 `data/exports/divlowvol-web-desktop.png` 和 `data/exports/divlowvol-web-mobile.png`。
+
+## 2026-10-14：官方数据优先
+
+按用户要求，来源存在差异时以指数官方数据为准。新方法为 `csindex_index_implied_daily_v2`，v1 派生记录及原始来源记录保留。使用全部已入库数据执行 `build-index --index divlowvol` 重建，历史均值与分位也按新规则恢复官方正 PE 样本；其他主源方法保持独立。
+
+- 官方滚动 PE 继续作为唯一主 PE，第三方差异超过5%仍保留对照值、差异比例和 `error` 标记，但 `pe_usable=true`，不再因此阻止 EPS、band 或统计。
+- 有效官方点位优先；东方财富缺失或有差异时仍可用于计算，`price_usable=true`。`price_status` 保留未核验或差异状态，不宣称第三方校验已经通过。
+- 官方 PE 缺失、为零或非有限值不替补；官方点位缺失后的第三方备用点位仍须通过独立核验。原有证券身份、交易日历、收盘时间和负 PE 规则继续生效。
+- 网页、API、CSV 明确显示官方来源和对照差异，CSV 增加 `price_usable`。价格收益也遵守已选官方点位的计算资格，差异提示保留。
+
+实际重建截至2026-10-14：v1、v2 各保留5,045条派生记录，原始点位、PE 及对照值逐日一致，无重复主键；可用隐含 EPS 从3,008条恢复为3,124条。106个重大 PE 差异仍保留 `error` 标记。当天官方点位11,295.34、PE 8.33，隐含 EPS 为1,355.9831932773，8倍点位10,847.8655462185；近5年统计使用此前1,211个有效日度 PE，均值约6.41857，当前分位约98.5549%。原始 PE 和点位没有被第三方值替换。
+
+145项单元测试、16项 PostgreSQL 集成测试通过，Ruff 和 JavaScript 语法检查通过。红利低波的 WebKit 检查覆盖官方优先提示、保留差异、当日及10月13日回看、8倍/均值/分位 band、PE 图、CSV、刷新和手机布局，未出现 JavaScript 错误。全站脚本另在沪深300缺少当日 EPS 时触发了其“最新日必有 band”的既有断言，本次红利低波检查独立运行通过。
+
+本次证据：`logs/divlowvol-official-priority-2026-10-14.json`、`logs/divlowvol-official-priority-verified-2026-10-14.json`、`data/exports/divlowvol-official-priority-web-2026-10-14.json`。网页接口与磁盘 CSV 的点位、PE 及质量字段一致；历史隐含 EPS 和 band 仅有 PostgreSQL 16位小数存储带来的末位舍入差异（小于 `1e-14` 点）。

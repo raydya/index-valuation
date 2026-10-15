@@ -4,6 +4,7 @@ const $ = id => document.getElementById(id);
 const state = { index: new URLSearchParams(location.search).get('index'), chartYears: 5, historyYears: 5, asOf: null, mode: 'fixed', data: null, page: 0, hover: -1, request: null };
 const colors = ['#258c88', '#469ca3', '#467bb5', '#706ea9', '#a08b6c', '#b47628'];
 const meanColor = '#b54d64';
+const panicColor = '#c44336';
 const sourceNames = { futu: '富途', csindex: '中证指数', cnindex: '国证指数', fred: 'FRED', nasdaq: 'Nasdaq', yahoo: 'Yahoo Finance', baostock: 'BaoStock', eastmoney: '东方财富', danjuan: '雪球基金', multpl: 'Multpl', gurufocus: 'GuruFocus' };
 const peBasisNames = { multpl_reported_ttm_current_estimate: '过去12个月已报告盈利，当前 PE 为估算', gurufocus_published_pe_unconfirmed: '供应商指数 PE；盈利、加权及亏损处理未完整确认', csindex_published_rolling_pe: '中证发布的滚动 PE', danjuan_published_pe_ttm: '雪球基金发布的 PE TTM；与官方计算用股本口径分别保存' };
 const num = value => value == null || value === '' || !Number.isFinite(Number(value)) ? null : Number(value);
@@ -35,6 +36,7 @@ async function load() {
   $('export').removeAttribute('href');
   $('export').setAttribute('aria-disabled', 'true');
   $('error').hidden = true;
+  $('panic-section').hidden = true;
   try {
     const response = await fetch(`/api/indices/${encodeURIComponent(state.index)}/dashboard?${parameters()}`, { signal: request.signal });
     const data = await response.json();
@@ -86,8 +88,8 @@ function render() {
   setText('table-range', `${d.series[0]?.trade_date || '—'} 至 ${p.trade_date}`);
   const waiting = p.pe == null ? '当日指数 PE 暂缺，隐含 EPS 和点位 band 暂不生成。 ' : p.pe_usable === false ? '当日 PE 存在重大来源差异，EPS 和点位 band 暂不生成，该 PE 不计入历史均值。 ' : p.implied_eps == null ? '当日价格尚未通过交叉核验，EPS 和点位 band 暂不生成。 ' : p.reference_pe == null ? '当日 PE 暂无独立来源对照，估值带为主源口径参考计算。 ' : '';
   const difference = num(p.pe_relative_error) > .01 ? `${sourceNames[p.pe_source] || '主源'} PE ${fmt(p.pe, 3)}×，${sourceNames[p.reference_pe_source] || '独立参考'} PE ${fmt(p.reference_pe, 2)}×，数值相差 ${percent(num(p.pe_relative_error) * 100)}。 ` : '';
-  const sourceNote = d.index.valuation.source === 'none' ? '当前展示指数价格；富途 OpenD 不支持该指数估值。' : `${d.index.valuation.label}的加权和亏损处理尚未完整核实；对照 PE 保留各自口径。`;
-  const priceNote = p.price_status === 'unverified' ? '当日点位仅有一个来源，待交叉核验。 ' : '';
+  const sourceNote = d.index.valuation.source === 'csindex' ? '以中证指数官方数据为准；第三方差异保留提示，不影响官方口径的 EPS、估值带和历史统计。' : d.index.valuation.source === 'none' ? '当前展示指数价格；富途 OpenD 不支持该指数估值。' : `${d.index.valuation.label}的加权和亏损处理尚未完整核实；对照 PE 保留各自口径。`;
+  const priceNote = p.price_status === 'unverified' ? (p.price_usable ? '采用官方点位，暂无独立价格对照。 ' : '当日点位仅有一个来源，待交叉核验。 ') : p.price_status === 'error' && p.price_usable ? '点位存在来源差异，采用指数官方点位。 ' : '';
   const usableLink = p.implied_eps == null && d.latest_complete_date && d.latest_complete_date !== p.trade_date ? `<button type="button" id="last-usable">查看 ${esc(d.latest_complete_date)} 的参考 band</button> ` : '';
   $('quality-note').innerHTML = `${esc(waiting + priceNote + difference + sourceNote)} ${usableLink}<a href="#method-details">查看口径与核验</a>`;
   setText('basis-note', d.basis_note);
@@ -108,6 +110,57 @@ function render() {
   renderChart();
   renderBandTable();
   renderTable();
+  renderPanicReference();
+}
+
+function renderPanicReference() {
+  const research = state.data.panic_reference;
+  if (!research) return;
+  const r = research.record, c = research.comparison, three = r?.three_year, one = r?.one_year;
+  const returnPct = value => num(value) == null ? '—' : percent(num(value) * 100);
+  const peRange = three?.observed_pe_range;
+  const statuses = { no_record: '尚无研究记录', insufficient_history: 'PE 历史不足5年', missing_pe: '缺少指数 PE' };
+  setText('panic-stamp', `研究日期 ${research.study_date}${r ? ` · ${sourceNames[r.source] || '无 PE 来源'} · 数据截至 ${r.cutoff}` : ''}`);
+  setText('panic-status', statuses[r?.status || 'no_record'] || (three.n ? '历史证据有限' : '暂无成熟样本'));
+  setText('panic-threshold', r?.threshold_pe == null ? '暂不设定' : `≤ ${fmt(r.threshold_pe)}×`);
+  setText('panic-threshold-note', r?.threshold_to_mean == null ? (statuses[r?.status || 'no_record'] || '') : `研究日前5年 P10 · 均值的 ${returnPct(r.threshold_to_mean)}`);
+  const gap = num(c.gap_pct);
+  setText('panic-gap', gap == null ? '—' : gap === 0 ? '等于观察线' : `${gap > 0 ? '高于' : '低于'} ${percent(Math.abs(gap))}`);
+  setText('panic-selected', `${c.date} · PE ${c.pe == null ? '缺失' : `${fmt(c.pe, 3)}×`}`);
+  setText('panic-observed-range', peRange ? `${fmt(peRange[0])}${peRange[0] === peRange[1] ? '' : `–${fmt(peRange[1])}`}×` : '—');
+  setText('panic-sample-count', three?.n ? `${three.n} 个成熟月份 · ${three.nonoverlap.n} 个非重叠窗口` : '尚无成熟3年样本');
+  setText('panic-return', returnPct(three?.median_annualized_return));
+  setText('panic-baseline', r?.baseline_three_year.n ? `全部合格月份 ${returnPct(r.baseline_three_year.median_annualized_return)}（n=${r.baseline_three_year.n}）` : '尚无可比的成熟基准');
+  const messages = {
+    before_study: `研究记录晚于所选日期；保留记录供查阅，暂停差距比较，不用于当时判断。`,
+    missing_pe: '所选日没有有效正 PE，无法计算差距。',
+    unusable_pe: '所选日 PE 因来源重大差异停用，暂停差距比较。',
+    different_basis: '所选日 PE 来源或口径与研究不同，暂停差距比较。',
+    insufficient_history: '完整5年历史不足，保留缺口，不以短样本分位替代观察线。',
+    no_record: '此指数尚未加入研究记录。',
+  };
+  let message = messages[c.status] || '差距 =（所选日 PE ÷ 固定观察上限 − 1）× 100%；只比较估值，不判断当日是否触发联合条件。';
+  if (c.status === 'available' && c.pe_comparison_status === 'error') message += ' 所选日 PE 存在大于5%的来源差异，差距仅作主源数值对照。';
+  if (c.method_changed) message += ' 现行统计规则已调整，此处保留研究时的结果。';
+  setText('panic-comparison-note', message);
+  setText('panic-risk', one?.n ? `随后1年价格年化中位数 ${returnPct(one.median_annualized_return)}（n=${one.n}）；1年内最差收盘浮亏 ${returnPct(one.worst_loss_from_entry)}。与3年统计的成熟样本可能不同。` : '当前规则尚无成熟1年回报样本，不能判断触发后的收益或继续下跌幅度。');
+  setText('panic-alternatives', r?.reference_thresholds.length ? `独立来源观察线：${r.reference_thresholds.map(a => `${sourceNames[a.source] || a.source} ≤ ${fmt(a.threshold_pe)}×（${a.cutoff}）`).join('；')}。各自同源历史计算，口径不可互换。` : '暂无独立来源的完整5年 PE 观察线可对照。');
+  $('panic-notes').innerHTML = (r?.notes || []).map(note => `<li>${esc(note)}</li>`).join('');
+  setText('panic-window-count', `${three?.nonoverlap.n || 0} 个非重叠窗口`);
+  $('panic-samples').innerHTML = (three?.nonoverlap_samples || []).map(s => `<tr>
+    <td>${esc(s.signal_date)}<small class="panic-holding">观察期 ${esc(s.entry_date)} 至 ${esc(s.exit_date)}</small></td>
+    <td>${fmt(s.signal_pe)}×</td><td>${percent(s.percentile)}</td><td>${returnPct(s.signal_drawdown)}</td>
+    <td>${returnPct(s.annualized_return)}</td><td>${returnPct(s.lowest_return_from_entry)}</td>
+    <td><span class="quality ${esc(QUALITY[s.pe_comparison_status]?.[1] || 'missing')}">${esc(QUALITY[s.pe_comparison_status]?.[0] || '暂无对照')}</span></td>
+  </tr>`).join('') || '<tr><td colspan="7" class="panic-empty">尚无成熟的非重叠3年窗口</td></tr>';
+  setText('panic-rule', `历史联合条件：${research.rule}`);
+  setText('panic-history', r?.history_start ? `观察线历史区间：${r.history_start} 至 ${r.history_end}，${fmt(r.history_count, 0)} 个有效观测${r.source === 'danjuan' ? '（已结束自然周采样）' : '（日度采样）'}${r.history_complete ? '。' : '；不足完整5年，未设定观察线。'}` : '没有可用于观察线的 PE 历史。');
+  $('panic-overview-rows').innerHTML = research.overview.map(row => `<tr${row.key === state.data.index.key ? ' class="panic-current" aria-current="true"' : ''}>
+    <td><a href="/?index=${encodeURIComponent(row.key)}">${esc(row.name)}</a></td>
+    <td>${row.threshold_pe == null ? esc(statuses[row.status] || '暂不设定') : `≤ ${fmt(row.threshold_pe)}×`}</td>
+    <td>${esc(sourceNames[row.source] || '—')}</td><td>${esc(row.cutoff || '—')}</td>
+    <td>${fmt(row.months, 0)}</td><td>${fmt(row.nonoverlap_windows, 0)}</td></tr>`).join('');
+  $('panic-section').hidden = false;
 }
 
 function renderPriceReturn() {
@@ -120,6 +173,7 @@ function renderPriceReturn() {
   if (r.status === 'insufficient_data') notes.push('至少需要两个不同日期的价格');
   if (r.status === 'invalid_price') notes.push('端点价格无效');
   if (r.status === 'price_discrepancy') notes.push('端点价格存在重大差异');
+  if (r.status === 'ok' && r.price_status === 'error') notes.push('端点价格存在差异，采用指数官方数据');
   if (r.status === 'ok' && r.elapsed_days < 365) notes.push('不足1年，按实际天数折算');
   if (r.price_status === 'unverified') notes.push('端点含未核验价格');
   if (r.price_status === 'warning') notes.push('端点价格存在1–5%差异');
@@ -143,6 +197,21 @@ function bandDefinitions() {
 
 function meanDefinition() {
   return { label: `${windowName()}平均 PE`, color: meanColor, field: state.mode === 'pe' ? 'mean_pe' : 'mean_points', mean: true };
+}
+
+function panicLineDefinition() {
+  const research = state.data.panic_reference;
+  if (research?.comparison.status !== 'available') return null;
+  const pe = num(research.record?.threshold_pe);
+  const value = state.mode === 'pe' ? pe : num(research.comparison.reference_points);
+  if (pe == null || pe <= 0 || value == null || value <= 0) return null;
+  return {
+    value,
+    label: `恐慌 ${fmt(pe)}×${state.mode === 'pe' ? '' : ` · ${fmt(value)}点`}`,
+    note: state.mode === 'pe'
+      ? `恐慌水平线为 ${research.study_date} 研究记录的 PE 观察上限 ${fmt(pe)}×。`
+      : `恐慌水平线 = ${research.comparison.date} 隐含 EPS × ${fmt(pe)}倍，固定为 ${fmt(value)}点；按所选日盈利换算，用于水平对照。研究日期 ${research.study_date}。`,
+  };
 }
 
 function renderBandTable() {
@@ -174,6 +243,8 @@ function renderChart() {
   const actualLabel = state.mode === 'pe' ? '指数 PE' : '收盘点位';
   const valueFor = (row, def) => num(def.mean ? row[def.field] : row[def.field]?.[def.key]);
   const values = rows.flatMap(row => [num(row[actualKey]), ...definitions.map(def => valueFor(row, def))]).filter(v => v != null);
+  const panicLine = panicLineDefinition();
+  if (panicLine) values.push(panicLine.value);
   $('tooltip').hidden = true;
   setText('chart-title', { fixed: 'PE 估值带', quantile: '历史分位估值带', pe: 'PE 历史走势' }[state.mode] + (sampled ? ' · 按 PE 实际采样日' : ''));
   document.querySelectorAll('[data-mode]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === state.mode)));
@@ -210,11 +281,16 @@ function renderChart() {
   content += `<path d="${line(row => num(row[actualKey]))}" fill="none" stroke="#203d88" stroke-width="2.3" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`;
   const last = rows[rows.length - 1];
   if (num(last[actualKey]) != null) content += `<circle cx="${x(rows.length - 1)}" cy="${y(num(last[actualKey]))}" r="4" fill="#203d88" stroke="white" stroke-width="2"/>`;
+  if (panicLine) {
+    const py = y(panicLine.value);
+    content += `<g><title>${esc(panicLine.note)}</title><line id="panic-line" data-value="${panicLine.value}" x1="${margin.left}" x2="${width - margin.right}" y1="${py}" y2="${py}" stroke="${panicColor}" stroke-width="2" vector-effect="non-scaling-stroke"/><text id="panic-line-label" x="${width - margin.right - 5}" y="${Math.max(margin.top + 15, py - 8)}" text-anchor="end" style="fill:${panicColor}">${esc(panicLine.label)}</text></g>`;
+  }
   content += `<g id="chart-hover" visibility="hidden"><line id="hover-line" y1="${margin.top}" y2="${height - margin.bottom}" stroke="#97a6be" stroke-dasharray="4 4"/><circle id="hover-dot" r="4" fill="#203d88" stroke="white" stroke-width="2"/></g>`;
   svg.innerHTML = content;
   plot = { rows, x, y, width, height, margin, actualKey };
-  $('legend').innerHTML = `<span><i style="--c:#203d88"></i>${actualLabel}</span>` + definitions.map(def => `<span><i${def.mean ? ' class="mean-key"' : ''} style="--c:${def.color}"></i>${esc(def.label)}</span>`).join('');
-  setText('chart-caption', `${state.mode === 'fixed' ? '固定倍数线 = 当日隐含 EPS × 固定 PE；虚线 = 当日隐含 EPS × 历史平均 PE。' : state.mode === 'pe' ? '虚线为历史平均 PE。' : '虚线 = 当日隐含 EPS × 历史平均 PE。'} 均值与分位按${windowName()}滚动计算，仅用此前数据；不足 ${state.data.minimum_history} 个观测时留空。${state.data.selected.history_span_short ? ` 当前可用 PE 历史不足${state.data.history_years}年，按实际样本计算。` : ''}`);
+  $('legend').innerHTML = `<span><i style="--c:#203d88"></i>${actualLabel}</span>` + definitions.map(def => `<span><i${def.mean ? ' class="mean-key"' : ''} style="--c:${def.color}"></i>${esc(def.label)}</span>`).join('') + (panicLine ? `<span><i style="--c:${panicColor}"></i>恐慌估值线</span>` : '');
+  const panicNote = panicLine?.note || (state.data.panic_reference?.comparison.status === 'available' ? '所选日缺少可用隐含 EPS，恐慌点位线暂不绘制。' : '恐慌线暂不可用，原因见下方研究记录。');
+  setText('chart-caption', `${state.mode === 'fixed' ? '固定倍数线 = 当日隐含 EPS × 固定 PE；虚线 = 当日隐含 EPS × 历史平均 PE。' : state.mode === 'pe' ? '虚线为历史平均 PE。' : '虚线 = 当日隐含 EPS × 历史平均 PE。'} 均值与分位按${windowName()}滚动计算，仅用此前数据；不足 ${state.data.minimum_history} 个观测时留空。${state.data.selected.history_span_short ? ` 当前可用 PE 历史不足${state.data.history_years}年，按实际样本计算。` : ''} ${panicNote}`);
 }
 
 function showHover(index) {

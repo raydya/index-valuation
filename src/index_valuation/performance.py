@@ -47,11 +47,15 @@ def price_return_summary(points, start, end):
     if any(not p["price"].is_finite() or p["price"] <= 0 for p in endpoints):
         result.update(status="invalid_price", price_status="error")
         return result
-    if any(p.get("price_status") == "error" for p in endpoints):
+    if any(
+        p.get("price_status") == "error" and not p.get("price_usable", False) for p in endpoints
+    ):
         result.update(status="price_discrepancy", price_status="error")
         return result
     result["price_status"] = (
-        "unverified"
+        "error"
+        if any(p.get("price_status") == "error" for p in endpoints)
+        else "unverified"
         if any(p.get("price_status") not in {"pass", "warning"} for p in endpoints)
         else "warning"
         if any(p["price_status"] == "warning" for p in endpoints)

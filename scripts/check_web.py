@@ -3,6 +3,7 @@
 import asyncio
 import csv
 import json
+import math
 from pathlib import Path
 
 import httpx
@@ -32,6 +33,105 @@ async def check_price_return(page, data):
         await expect(page.locator("#return-status")).to_contain_text("未核验价格")
 
 
+async def check_panic_line(page, data, mode="fixed"):
+    research = data["panic_reference"]
+    value = None
+    if research["comparison"]["status"] == "available":
+        value = (
+            research["record"]["threshold_pe"]
+            if mode == "pe"
+            else research["comparison"]["reference_points"]
+        )
+    line = page.locator("#panic-line")
+    if value is None:
+        await expect(line).to_have_count(0)
+        return
+    # A horizontal SVG line has a zero-height geometric bounding box even
+    # though its stroke is painted; verify attachment, paint and its label.
+    await expect(line).to_have_count(1)
+    await expect(page.locator("#panic-line-label")).to_be_visible()
+    assert math.isclose(float(await line.get_attribute("data-value")), float(value), rel_tol=1e-12)
+    geometry = await line.evaluate("""line => {
+        const box = line.ownerSVGElement.viewBox.baseVal;
+        const label = document.getElementById('panic-line-label').getBBox();
+        const style = getComputedStyle(line);
+        return {x1: line.x1.baseVal.value, x2: line.x2.baseVal.value,
+            y1: line.y1.baseVal.value, y2: line.y2.baseVal.value,
+            width: box.width, height: box.height, labelLeft: label.x,
+            labelRight: label.x + label.width, stroke: style.stroke,
+            strokeWidth: parseFloat(style.strokeWidth), display: style.display,
+            visibility: style.visibility, opacity: parseFloat(style.opacity)};
+    }""")
+    assert geometry["y1"] == geometry["y2"], "Panic reference must be horizontal"
+    assert geometry["stroke"] != "none" and geometry["strokeWidth"] > 0
+    assert geometry["display"] != "none" and geometry["visibility"] == "visible"
+    assert geometry["opacity"] > 0
+    assert 24 <= geometry["y1"] <= geometry["height"] - 43
+    assert geometry["x1"] > 0 and geometry["x2"] > geometry["width"] * 0.9
+    assert geometry["labelLeft"] >= 0 and geometry["labelRight"] <= geometry["width"]
+    await expect(page.locator("#panic-line-label")).to_contain_text(
+        f"{display(research['record']['threshold_pe'])}×"
+    )
+    if mode != "pe":
+        await expect(page.locator("#panic-line-label")).to_contain_text(f"{display(value)}点")
+        await expect(page.locator("#chart-caption")).to_contain_text(data["selected"]["trade_date"])
+    await expect(page.locator("#legend")).to_contain_text("恐慌估值线")
+
+
+async def check_panic_reference(page, data):
+    research = data["panic_reference"]
+    record, comparison = research["record"], research["comparison"]
+    await expect(page.locator("#panic-section")).to_be_visible()
+    await expect(page.locator("#panic-stamp")).to_contain_text(research["study_date"])
+    threshold = record["threshold_pe"] if record else None
+    await expect(page.locator("#panic-threshold")).to_have_text(
+        "暂不设定" if threshold is None else f"≤ {display(threshold)}×"
+    )
+    gap = comparison["gap_pct"]
+    gap_text = "—"
+    if gap is not None:
+        gap = float(gap)
+        gap_text = (
+            "等于观察线"
+            if gap == 0
+            else (f"{'高于' if gap > 0 else '低于'} {display(abs(gap), 1)}%")
+        )
+    await expect(page.locator("#panic-gap")).to_have_text(gap_text)
+    await expect(page.locator("#panic-selected")).to_contain_text(comparison["date"])
+    await check_panic_line(page, data)
+    if record and not record["three_year"]["n"]:
+        await expect(page.locator("#panic-return")).to_have_text("—")
+        await expect(page.locator("#panic-sample-count")).to_have_text("尚无成熟3年样本")
+    await page.locator("#panic-evidence summary").click()
+    samples = record["three_year"]["nonoverlap_samples"] if record else []
+    await expect(page.locator("#panic-samples tr")).to_have_count(len(samples) or 1)
+    if samples:
+        await expect(page.locator("#panic-samples tr").first).to_contain_text(
+            samples[0]["signal_date"]
+        )
+    await page.locator("#panic-overview summary").click()
+    await expect(page.locator("#panic-overview-rows tr")).to_have_count(len(research["overview"]))
+    await expect(page.locator("#panic-overview-rows .panic-current")).to_contain_text(
+        data["index"]["name"]
+    )
+    await page.locator("#panic-section").screenshot(
+        path=OUTPUT / f"{data['index']['key']}-panic-reference.png"
+    )
+    await page.set_viewport_size({"width": 390, "height": 844})
+    await page.wait_for_function("document.getElementById('chart').viewBox.baseVal.width < 500")
+    await check_panic_line(page, data)
+    assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
+    await page.locator(".workspace").screenshot(
+        path=OUTPUT / f"{data['index']['key']}-panic-line-mobile.png"
+    )
+    await page.locator("#panic-section").screenshot(
+        path=OUTPUT / f"{data['index']['key']}-panic-mobile.png"
+    )
+    await page.set_viewport_size({"width": 1440, "height": 1050})
+    await page.locator("#panic-evidence summary").click()
+    await page.locator("#panic-overview summary").click()
+
+
 async def check_additional_indices(page, dashboards):
     """Every configured index shares selection, calculation and export behavior."""
     results = []
@@ -50,6 +150,7 @@ async def check_additional_indices(page, dashboards):
         await expect(page.locator("#pe")).to_have_text(display(selected["pe"], 3))
         await expect(page.locator("#eps")).to_have_text(display(selected["implied_eps"]))
         await check_price_return(page, data)
+        await check_panic_reference(page, data)
         if index.get("tracking_etfs"):
             await expect(page.locator("#benchmark-note")).to_contain_text(index["tracking_etfs"][0])
         if index["valuation"]["source"] == "none":
@@ -63,14 +164,20 @@ async def check_additional_indices(page, dashboards):
                 await page.locator("#latest").click()
                 await expect(page.locator("#as-of")).to_have_value(data["available_end"])
                 await expect(page.locator("#eps")).to_have_text("—")
+        if index["valuation"]["source"] == "csindex":
+            await expect(page.locator("#quality-note")).to_contain_text("以中证指数官方数据为准")
+            if selected.get("price_usable") and selected["price_status"] == "unverified":
+                await expect(page.locator("#quality-note")).to_contain_text("采用官方点位")
         await expect(page.locator(".mean-row")).to_contain_text(display(selected["mean_points"]))
         await expect(page.locator("#band-rows tr")).to_have_count(len(index["band_multiples"]) + 1)
         if selected["history_span_short"]:
             await expect(page.locator("#band-footnote")).to_contain_text("历史不足5年")
         await page.locator("[data-mode=quantile]").click()
         await expect(page.locator("#band-rows tr")).to_have_count(6)
+        await check_panic_line(page, data, "quantile")
         await page.locator("[data-mode=pe]").click()
         await expect(page.locator("#chart-title")).to_contain_text("PE 历史走势")
+        await check_panic_line(page, data, "pe")
         await page.locator("[data-mode=fixed]").click()
         missing = next((r for r in data["series"] if r["pe"] is None), None)
         if missing:
@@ -79,6 +186,7 @@ async def check_additional_indices(page, dashboards):
             await expect(page.locator("#price-source")).to_contain_text(missing["trade_date"])
             await expect(page.locator("#pe")).to_have_text("—")
             await expect(page.locator("#eps")).to_have_text("—")
+            await expect(page.locator("#panic-line")).to_have_count(0)
             await page.locator("#latest").click()
             await expect(page.locator("#as-of")).to_have_value(data["available_end"])
             await expect(page.locator("#pe")).to_have_text(display(selected["pe"], 3))
@@ -144,6 +252,14 @@ async def main():
             await page.goto(URL, wait_until="networkidle")
             await expect(page.locator("#pe")).to_have_text(f"{float(data['selected']['pe']):,.3f}")
             await check_price_return(page, data)
+            await check_panic_reference(page, data)
+            async with page.expect_download() as event:
+                await page.locator("#panic-download").click()
+            research_download = await event.value
+            research_path = OUTPUT / "panic-reference-web-download.json"
+            await research_download.save_as(research_path)
+            downloaded = json.loads(research_path.read_text())
+            assert downloaded["indices"]["csi300"] == data["panic_reference"]["record"]
             await expect(page.locator("#band-rows tr")).to_have_count(
                 len(data["selected"]["fixed"]) + 1
             )
@@ -162,11 +278,17 @@ async def main():
             await expect(page.locator("#tooltip")).to_contain_text("近5年平均 PE")
             await page.locator("[data-mode=quantile]").click()
             await expect(page.locator("#band-rows tr")).to_have_count(6)
+            await check_panic_line(page, data, "quantile")
             await page.locator("[data-mode=pe]").click()
             await expect(page.locator("#chart-title")).to_have_text("PE 历史走势")
+            await check_panic_line(page, data, "pe")
             await page.locator('[data-years="1"]').click()
             await expect(page.locator('[data-years="1"]')).to_have_attribute("aria-pressed", "true")
             await check_price_return(page, one_year)
+            await check_panic_line(page, one_year, "pe")
+            await expect(page.locator("#panic-threshold")).to_have_text(
+                f"≤ {display(data['panic_reference']['record']['threshold_pe'])}×"
+            )
             await page.locator("#history-window").select_option("10")
             await expect(page.locator("#percentile-label")).to_have_text("近10年 PE 分位")
             await expect(page.locator("#mean-summary")).to_have_text(
@@ -191,6 +313,11 @@ async def main():
             await page.locator("#as-of").fill("2005-01-04")
             await page.locator("#as-of").dispatch_event("change")
             await expect(page.locator("#price-source")).to_contain_text("2005-01-04")
+            await expect(page.locator("#panic-gap")).to_have_text("—")
+            await expect(page.locator("#panic-line")).to_have_count(0)
+            await expect(page.locator("#panic-comparison-note")).to_contain_text(
+                "研究记录晚于所选日期"
+            )
             await expect(page.locator("#percentile")).to_have_text("—")
             await expect(page.locator("#eps")).not_to_have_text("—")
             await expect(page.locator("#mean-summary")).to_have_text("近10年平均 —")
@@ -242,6 +369,9 @@ async def main():
             await page.locator("#method-details summary").click()
             await expect(page.locator("#basis-note")).to_be_visible()
             additional_indices = await check_additional_indices(page, extra)
+            await page.locator("#panic-overview summary").click()
+            await page.locator('#panic-overview-rows a[href="/?index=csi300"]').click()
+            await expect(page.locator("#index-select")).to_have_value("csi300")
             await page.locator("#index-select").select_option(data["index"]["key"])
             await expect(page.locator("#price")).to_have_text(display(data["selected"]["price"]))
             await expect(page.locator("#code")).to_have_text(data["index"]["code"])
@@ -274,6 +404,10 @@ async def main():
                     "method_details",
                     "no_javascript_errors",
                     "index_switch_reload_and_independent_csv",
+                    "panic_reference_all_indices_thresholds_samples_and_missing_states",
+                    "panic_reference_historical_guard_and_window_independence",
+                    "panic_reference_overview_links_json_download_and_mobile",
+                    "panic_horizontal_line_units_selected_eps_axis_extent_and_mobile_label",
                 ],
             }
             (OUTPUT / "web-validation.json").write_text(

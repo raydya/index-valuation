@@ -16,6 +16,7 @@ from index_valuation.config import Settings
 from index_valuation.db import build_engine
 from index_valuation.domain import DataError
 from index_valuation.index_series import build_dashboard, method_for, series_csv
+from index_valuation.panic_reference import load_panic_reference, panic_reference_for
 from index_valuation.registry import load_indices
 from index_valuation.repository import Repository
 
@@ -30,6 +31,7 @@ def create_app(*, repository=None, specs=None, settings=None):
         engine = build_engine(settings)
         repository = Repository(engine)
     specs = specs if specs is not None else load_indices((settings or Settings()).indices_file)
+    panic_reference = load_panic_reference()
 
     @asynccontextmanager
     async def lifespan(app):
@@ -67,17 +69,31 @@ def create_app(*, repository=None, specs=None, settings=None):
             for s in specs.values()
         ]
 
+    @app.get("/api/panic-reference")
+    def get_panic_reference():
+        return Response(
+            json_text(panic_reference),
+            media_type="application/json",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="panic-reference-{panic_reference["study_date"]}.json"'
+                )
+            },
+        )
+
     def dashboard(key, as_of, chart_years, history_years):
         if key not in specs:
             raise HTTPException(404, "指数未配置")
         try:
-            return build_dashboard(
+            data = build_dashboard(
                 specs[key],
                 repository.index_series(key, method_for(specs[key])),
                 as_of=as_of,
                 chart_years=chart_years,
                 history_years=history_years,
             )
+            data["panic_reference"] = panic_reference_for(data, panic_reference, specs)
+            return data
         except DataError as error:
             raise HTTPException(422, str(error)) from error
 

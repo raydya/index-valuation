@@ -463,3 +463,58 @@ def test_direct_index_materialization_is_independent_and_idempotent(repository, 
     assert count(repository, WeightRecord) == count(repository, DailyValuation) == 0
     assert repository.index_series(SPEC.key, METHOD)[0]["pe"] == 20
     assert repository.history(SPEC, DAY + timedelta(days=1)) == []
+
+
+def test_official_priority_rebuild_preserves_legacy_method_and_exports(repository, tmp_path):
+    import csv
+    from io import StringIO
+
+    from fastapi.testclient import TestClient
+
+    from index_valuation.index_series import IndexSeries, derive_points, method_for
+    from index_valuation.models import IndexSeriesRecord
+    from index_valuation.webapp import create_app
+
+    spec = replace(SPEC, valuation_source="csindex")
+    repository.ensure_index(spec)
+    run = repository.start_run(spec, DAY)
+    prices = [
+        Observation(spec.quote_code, DAY, source, Decimal(value), None, None, NOW, NOW)
+        for source, value in (("csindex", 1000), ("eastmoney", 2000))
+    ]
+    values = [
+        SourceValuation(source, spec.quote_code, DAY, "pe_ttm", basis, Decimal(value), NOW, "raw")
+        for source, basis, value in (
+            ("csindex", "csindex_published_rolling_pe", 8),
+            ("danjuan", "danjuan_published_pe_ttm", 10),
+        )
+    ]
+    repository.save_observations(run, prices)
+    repository.save_source_valuations(run, values)
+    legacy_method = "csindex_index_implied_daily_v1"
+    legacy = {**derive_points(spec, prices, values)[0], "implied_eps": None, "pe_usable": False}
+    repository.save_index_series(spec, legacy_method, run, [legacy])
+
+    job = IndexSeries(repository, tmp_path)
+    job.refresh(spec)
+    result = job.refresh(spec)
+    assert result["status"] == "collected"
+    assert result["latest_complete_date"] == DAY
+    assert count(repository, IndexSeriesRecord) == 2
+    assert count(repository, DailyObservation) == count(repository, SourceValuationRecord) == 2
+    assert repository.index_series(spec.key, legacy_method)[0]["implied_eps"] is None
+    current = repository.index_series(spec.key, method_for(spec))[0]
+    assert current["implied_eps"] == 125
+    assert current["price_status"] == current["pe_comparison_status"] == "error"
+    assert current["price_usable"] and current["pe_usable"]
+
+    with TestClient(create_app(repository=repository, specs={spec.key: spec})) as client:
+        data = client.get(f"/api/indices/{spec.key}/dashboard").json()
+        assert data["method"] == method_for(spec) != legacy_method
+        assert Decimal(data["selected"]["fixed"]["8"]) == 1000
+        response = client.get(f"/api/indices/{spec.key}/export.csv")
+    row = list(csv.DictReader(StringIO(response.text.lstrip("\ufeff"))))[0]
+    assert row["price_usable"] == row["pe_usable"] == "True"
+    assert Decimal(row["implied_eps"]) == 125
+    assert Decimal(row["band_8x"]) == 1000
+    assert row["price_status"] == row["pe_comparison_status"] == "error"
