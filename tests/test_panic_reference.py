@@ -177,6 +177,9 @@ def test_new_index_without_research_uses_generic_empty_state():
 
 def test_api_records_are_window_independent_and_download_matches_dashboard():
     class MemoryRepository:
+        def panic_lines(self, specs, as_of=None):
+            return {}
+
         def index_series(self, key, method):
             return [
                 {

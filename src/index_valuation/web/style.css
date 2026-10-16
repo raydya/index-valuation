@@ -20,6 +20,7 @@
 .panic-metric:first-child{border:0;padding:0}.panic-metric>span{font-size:12px;color:var(--muted)}
 .panic-metric strong{font-size:24px;font-weight:550;letter-spacing:-.4px;line-height:1.4}
 #panic-threshold{color:var(--blue)}.panic-metric small{font-size:11px;line-height:1.7}
+#panic-live-threshold{color:var(--blue)}#panic-live-section{border-top:3px solid #c44336}#panic-live-section .panic-context{padding-bottom:20px}
 .panic-context{padding:0 26px 18px;font-size:12px;color:#607087;line-height:1.8}.panic-context p+p{margin-top:7px}
 .panic-context ul{margin:10px 0 0;padding-left:18px;color:#886324}.panic-context li+li{margin-top:4px}
 .panic-details{border-top:1px solid var(--line)}.panic-details summary{cursor:pointer;padding:15px 26px;font-size:13px}

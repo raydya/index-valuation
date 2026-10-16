@@ -35,9 +35,24 @@
       <aside class="band-pane"><div class="band-heading"><h3 id="band-heading">倍数对应点位</h3><span id="band-date">—</span></div><table class="band-table"><thead><tr><th id="band-first-column">PE</th><th>参考点位</th><th>距收盘</th></tr></thead><tbody id="band-rows"></tbody></table><div class="band-equation"><span>计算方式</span><p id="band-equation">隐含 EPS × PE 倍数</p></div><p class="band-footnote" id="band-footnote">参考点位是指定倍数下的换算结果。</p></aside></div>
       <div class="method-bar"><span class="method-icon">i</span><p id="quality-note">采用富途指数 PE，隐含 EPS 的盈利期间跟随 PE。<a href="#method-details">查看口径与核验</a></p></div>
     </section>
+    <section id="panic-live-section" class="panic-section" aria-labelledby="panic-live-title" hidden>
+      <div class="section-heading"><div><h2 id="panic-live-title">滚动恐慌估值线</h2><p id="panic-live-stamp"></p></div><span id="panic-live-status" class="panic-status"></span></div>
+      <p class="panic-intro">每次估值更新自动重算。只使用所选估值日之前、同一口径的近5年有效 PE，取低10%分位；不代表确定的市场底部。</p>
+      <div class="panic-metrics">
+        <div class="panic-metric"><span>恐慌 PE 参考线</span><strong id="panic-live-threshold">—</strong><small id="panic-live-threshold-note"></small></div>
+        <div class="panic-metric"><span>对应指数点位</span><strong id="panic-live-points">—</strong><small id="panic-live-points-note">所选日隐含 EPS × 恐慌 PE</small></div>
+        <div class="panic-metric"><span>所选日 PE 距恐慌线</span><strong id="panic-live-gap">—</strong><small id="panic-live-selected"></small></div>
+        <div class="panic-metric"><span>统计样本</span><strong id="panic-live-count">—</strong><small id="panic-live-history"></small></div>
+      </div>
+      <div class="panic-context"><p id="panic-live-note"></p><p>这是一条所选估值日的水平参考线：点位图按当天盈利换算，PE 走势图直接显示恐慌 PE 倍数。历史回看只使用该日期之前的观测，不包含当天及未来数据；来源历史可能含修订。图表区间和其他统计窗口不改变本线的5年规则。</p></div>
+      <details id="panic-live-overview" class="panic-details">
+        <summary>各指数当前恐慌线 <span>历史回看时仅显示所选日及之前的结果</span></summary>
+        <div class="table-scroll"><table class="history-table panic-table"><caption>各指数使用自身当前方法；来源口径、样本及缺口分别保留</caption><thead><tr><th>指数</th><th>恐慌 PE</th><th>对应点位</th><th>PE 来源</th><th>估值日期</th><th>样本数</th><th>状态</th></tr></thead><tbody id="panic-live-overview-rows"></tbody></table></div>
+      </details>
+    </section>
     <section id="panic-section" class="panic-section" aria-labelledby="panic-title" hidden>
-      <div class="section-heading"><div><h2 id="panic-title">PE 恐慌低点参考</h2><p id="panic-stamp"></p></div><span id="panic-status" class="panic-status"></span></div>
-      <p class="panic-intro">低估值观察线与历史触发记录，仅作研究对照，不能确认市场底部。</p>
+      <div class="section-heading"><div><h2 id="panic-title">历史恐慌研究归档</h2><p id="panic-stamp"></p></div><span id="panic-status" class="panic-status"></span></div>
+      <p class="panic-intro">以下为固定研究日期的历史记录，保留当时的来源和规则。旧观察线不参与上方绘图，旧来源回报也不作为当前滚动恐慌线的验证证据。</p>
       <div class="panic-metrics">
         <div class="panic-metric"><span>低 PE 观察上限</span><strong id="panic-threshold">—</strong><small id="panic-threshold-note"></small></div>
         <div class="panic-metric"><span>所选日 PE 距观察线</span><strong id="panic-gap">—</strong><small id="panic-selected"></small></div>
@@ -51,7 +66,7 @@
         <div class="panic-method"><p id="panic-rule"></p><p id="panic-history"></p><p>每个已结束月份取首个合格的实际 PE 观测，再判断条件；从次交易日收盘起计算回报。历史触发使用各自当时的5年分布，所以上方 PE 范围并非固定买入区间，也不是全历史 PE 极值。</p><p>月份样本会重叠；非重叠窗口也不代表统计独立。收益为本币价格回报，不含分红、费用和汇率换算；最差浮亏以观察起点为基准，使用收盘价。数据为供应商当前提供的历史版本，可能含事后修订。</p><p>观察线固定于研究日期，不随图表区间、统计窗口或每日行情更新。仅比较 PE 不代表已满足20%跌幅条件。</p></div>
       </details>
       <details id="panic-overview" class="panic-details">
-        <summary>全部指数观察线对照 <span>同一研究规则，保留各自来源口径</span></summary>
+        <summary>历史研究观察线对照 <span>研究日期固定，保留当时来源口径</span></summary>
         <div class="table-scroll"><table class="history-table panic-table"><caption>研究时的5年低10%观察上限；点击指数查看对应记录</caption><thead><tr><th>指数</th><th>PE 观察上限</th><th>PE 来源</th><th>数据截至</th><th>成熟3年月份</th><th>非重叠3年窗口</th></tr></thead><tbody id="panic-overview-rows"></tbody></table></div>
       </details>
       <div class="panic-footer"><span>固定研究记录 · 日常更新保留</span><a href="/api/panic-reference" id="panic-download">下载研究记录 JSON</a></div>

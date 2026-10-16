@@ -99,6 +99,28 @@ def create_app(*, repository=None, specs=None, settings=None):
                 chart_years=chart_years,
                 history_years=history_years,
             )
+
+            # Current lines come from the persisted current-method sequence. The
+            # bundled research remains a dated archive with its own evidence.
+            def visible_line(spec, line, day=None):
+                if not spec.collection_enabled:
+                    return {"status": "collection_paused", "as_of": day}
+                return line or {"status": "not_calculated", "as_of": day}
+
+            data["panic_line"] = visible_line(
+                specs[key], data["panic_line"], data["selected"]["trade_date"]
+            )
+            lines = repository.panic_lines(
+                specs, as_of=data["selected"]["trade_date"] if as_of else None
+            )
+            data["panic_overview"] = [
+                {
+                    "key": spec.key,
+                    "name": spec.name,
+                    "line": visible_line(spec, lines.get(spec.key)),
+                }
+                for spec in specs.values()
+            ]
             data["panic_reference"] = panic_reference_for(data, panic_reference, specs)
             return data
         except DataError as error:

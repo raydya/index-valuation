@@ -457,6 +457,7 @@ def build_dashboard(spec, points, *, as_of=None, chart_years=5, history_years=5)
                             "reference_pe_basis",
                             "pe_relative_error",
                             "phase",
+                            "panic_line",
                         )
                     },
                     **bands,
@@ -502,6 +503,7 @@ def build_dashboard(spec, points, *, as_of=None, chart_years=5, history_years=5)
         "history_years": history_years,
         "minimum_history": spec.band_min_observations,
         "selected": {**selected, **latest_bands},
+        "panic_line": selected.get("panic_line"),
         "series": series,
         "coverage": {
             "price": sum(p["price"] is not None for p in points),
@@ -515,6 +517,23 @@ def build_dashboard(spec, points, *, as_of=None, chart_years=5, history_years=5)
 
 def series_csv(dashboard):
     rows = dashboard["series"]
+    panic_fields = (
+        "threshold_pe",
+        "reference_points",
+        "status",
+        "as_of",
+        "method",
+        "version",
+        "source",
+        "basis",
+        "history_start",
+        "history_end",
+        "history_count",
+        "history_years",
+        "history_frequency",
+        "history_complete",
+        "quantile",
+    )
     fields = [
         "trade_date",
         "price",
@@ -551,10 +570,16 @@ def series_csv(dashboard):
     multiples = sorted(map(str, dashboard["index"]["band_multiples"]), key=Decimal)
     fields += [f"band_{m}x" for m in multiples]
     fields += [f"quantile_{q}" for q in map(str, QUANTILES)]
+    fields += [f"panic_{key}" for key in panic_fields]
     output = StringIO(newline="")
     writer = csv.DictWriter(output, fieldnames=fields)
     writer.writeheader()
     for row in rows:
+        panic_line = (
+            (row.get("panic_line") or {})
+            if dashboard["index"]["collection_enabled"]
+            else {"status": "collection_paused", "as_of": row["trade_date"]}
+        )
         writer.writerow(
             {
                 **{k: row.get(k) for k in fields if not k.startswith(("band_", "quantile_"))},
@@ -562,6 +587,7 @@ def series_csv(dashboard):
                 "history_frequency": dashboard["index"]["valuation"]["history_frequency"],
                 **{f"band_{m}x": row["fixed"].get(m) for m in multiples},
                 **{f"quantile_{q}": row["quantile_points"].get(str(q)) for q in QUANTILES},
+                **{f"panic_{key}": panic_line.get(key) for key in panic_fields},
             }
         )
     return "\ufeff" + output.getvalue()
@@ -572,10 +598,12 @@ class IndexSeries:
         self.repository, self.output_dir = repository, output_dir
 
     def refresh(self, spec):
+        from index_valuation.panic_lines import enrich_panic_lines
+
         self.repository.ensure_index(spec)
         with self.repository.lock(spec.key):
             observations, valuations = self.repository.index_inputs(spec)
-            points = derive_points(spec, observations, valuations)
+            points = enrich_panic_lines(spec, derive_points(spec, observations, valuations))
             if not points:
                 raise DataError("No collected index inputs")
             run_id = self.repository.start_run(spec, points[-1]["trade_date"])
@@ -609,6 +637,7 @@ class IndexSeries:
                     "basis_note": basis_note(spec),
                     "latest_complete_date": dashboard["latest_complete_date"],
                     "latest": dashboard["selected"],
+                    "panic_line": dashboard["panic_line"],
                     "csv": str(path),
                 }
                 report_path = self.output_dir / f"{spec.key}-index-series-{run_id}.json"

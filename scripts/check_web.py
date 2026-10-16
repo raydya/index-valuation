@@ -34,14 +34,10 @@ async def check_price_return(page, data):
 
 
 async def check_panic_line(page, data, mode="fixed"):
-    research = data["panic_reference"]
+    summary = data["panic_line"]
     value = None
-    if research["comparison"]["status"] == "available":
-        value = (
-            research["record"]["threshold_pe"]
-            if mode == "pe"
-            else research["comparison"]["reference_points"]
-        )
+    if summary and summary["status"] == "reference":
+        value = summary["threshold_pe"] if mode == "pe" else summary["reference_points"]
     line = page.locator("#panic-line")
     if value is None:
         await expect(line).to_have_count(0)
@@ -70,7 +66,7 @@ async def check_panic_line(page, data, mode="fixed"):
     assert geometry["x1"] > 0 and geometry["x2"] > geometry["width"] * 0.9
     assert geometry["labelLeft"] >= 0 and geometry["labelRight"] <= geometry["width"]
     await expect(page.locator("#panic-line-label")).to_contain_text(
-        f"{display(research['record']['threshold_pe'])}×"
+        f"{display(summary['threshold_pe'])}×"
     )
     if mode != "pe":
         await expect(page.locator("#panic-line-label")).to_contain_text(f"{display(value)}点")
@@ -78,10 +74,39 @@ async def check_panic_line(page, data, mode="fixed"):
     await expect(page.locator("#legend")).to_contain_text("恐慌估值线")
 
 
+async def check_live_panic_summary(page, data):
+    summary = data["panic_line"]
+    await expect(page.locator("#panic-live-section")).to_be_visible()
+    threshold = summary.get("threshold_pe") if summary else None
+    points = summary.get("reference_points") if summary else None
+    await expect(page.locator("#panic-live-threshold")).to_have_text(
+        "暂不设定" if threshold is None else f"{display(threshold)}×"
+    )
+    await expect(page.locator("#panic-live-points")).to_have_text(display(points))
+    await expect(page.locator("#panic-live-stamp")).to_contain_text(data["selected"]["trade_date"])
+    await expect(page.locator("#panic-live-section")).to_contain_text("每次估值更新自动重算")
+    if summary and summary.get("history_end"):
+        assert summary["history_end"] < summary["as_of"]
+    await page.locator("#panic-live-overview summary").click()
+    await expect(page.locator("#panic-live-overview-rows tr")).to_have_count(
+        len(data["panic_overview"])
+    )
+    await expect(page.locator("#panic-live-overview-rows .panic-current")).to_contain_text(
+        data["index"]["name"]
+    )
+    for row in data["panic_overview"]:
+        if data.get("requested_date") and row["line"] and row["line"].get("as_of"):
+            assert row["line"]["as_of"] <= data["requested_date"]
+    await page.locator("#panic-live-overview summary").click()
+
+
 async def check_panic_reference(page, data):
+    await check_live_panic_summary(page, data)
     research = data["panic_reference"]
     record, comparison = research["record"], research["comparison"]
     await expect(page.locator("#panic-section")).to_be_visible()
+    await expect(page.locator("#panic-title")).to_have_text("历史恐慌研究归档")
+    await expect(page.locator("#panic-section")).to_contain_text("旧观察线不参与上方绘图")
     await expect(page.locator("#panic-stamp")).to_contain_text(research["study_date"])
     threshold = record["threshold_pe"] if record else None
     await expect(page.locator("#panic-threshold")).to_have_text(
@@ -127,6 +152,9 @@ async def check_panic_reference(page, data):
     await page.locator("#panic-section").screenshot(
         path=OUTPUT / f"{data['index']['key']}-panic-mobile.png"
     )
+    await page.locator("#panic-live-section").screenshot(
+        path=OUTPUT / f"{data['index']['key']}-panic-live-mobile.png"
+    )
     await page.set_viewport_size({"width": 1440, "height": 1050})
     await page.locator("#panic-evidence summary").click()
     await page.locator("#panic-overview summary").click()
@@ -165,7 +193,10 @@ async def check_additional_indices(page, dashboards):
             assert selected["price_source"] in ("futorest", None)
             assert not {"yahoo", "google", "eastmoney"}.intersection(selected["source_prices"])
             assert data["panic_reference"]["comparison"]["status"] != "available"
-            await expect(page.locator("#panic-line")).to_have_count(0)
+            assert data["panic_line"]["method"] == data["method"]
+            assert data["panic_line"]["source"] == "futorest"
+            assert data["panic_line"]["status"] == "reference"
+            await check_panic_line(page, data)
         proxy = index["valuation"].get("proxy_symbol")
         if proxy:
             await expect(page.locator("#pe-title")).to_contain_text("ETF 代理 PE")
@@ -214,6 +245,49 @@ async def check_additional_indices(page, dashboards):
         await expect(page.locator("#chart-title")).to_contain_text("PE 历史走势")
         await check_panic_line(page, data, "pe")
         await page.locator("[data-mode=fixed]").click()
+        if index["valuation"]["source"] == "futorest":
+            # The rolling line uses only history before the selected date,
+            # including dates earlier than the separately archived study.
+            day = data["series"][len(data["series"]) // 2]["trade_date"]
+            async with page.expect_response(
+                lambda response, key=key, day=day: (
+                    f"/api/indices/{key}/dashboard?" in response.url
+                    and f"as_of={day}" in response.url
+                )
+            ) as event:
+                await page.locator("#as-of").fill(day)
+                await page.locator("#as-of").dispatch_event("change")
+            historical = await (await event.value).json()
+            await expect(page.locator("#price-source")).to_contain_text(day)
+            assert historical["panic_line"]["status"] == "reference"
+            assert historical["panic_line"]["history_end"] < day
+            assert historical["panic_reference"]["comparison"]["status"] == "before_study"
+            await check_panic_line(page, historical)
+            await check_live_panic_summary(page, historical)
+            if key == "sp500":
+                # REST supplies PE before the independently verified price
+                # coverage begins: show PE units without inventing EPS points.
+                async with page.expect_response(
+                    lambda response: (
+                        "/api/indices/sp500/dashboard?" in response.url
+                        and "as_of=2010-10-15" in response.url
+                    )
+                ) as event:
+                    await page.locator("#as-of").fill("2010-10-15")
+                    await page.locator("#as-of").dispatch_event("change")
+                pe_only = await (await event.value).json()
+                await expect(page.locator("#price-source")).to_contain_text("2010-10-15")
+                assert pe_only["panic_line"]["status"] == "reference"
+                assert pe_only["selected"]["implied_eps"] is None
+                assert pe_only["panic_line"]["reference_points"] is None
+                await check_panic_line(page, pe_only)
+                await expect(page.locator("#panic-live-note")).to_contain_text("仅在 PE 走势图绘线")
+                await page.locator("[data-mode=pe]").click()
+                await check_panic_line(page, pe_only, "pe")
+                await page.locator("[data-mode=fixed]").click()
+            await page.locator("#latest").click()
+            await expect(page.locator("#as-of")).to_have_value(data["available_end"])
+            await check_panic_line(page, data)
         missing = next((r for r in data["series"] if r["pe"] is None), None)
         if missing:
             await page.locator("#as-of").fill(missing["trade_date"])
@@ -236,6 +310,11 @@ async def check_additional_indices(page, dashboards):
         assert rows[-1]["pe"] == (selected["pe"] or "")
         assert rows[-1]["mean_pe"] == (selected["mean_pe"] or "")
         assert rows[-1]["trade_date"] == data["available_end"]
+        panic = data["panic_line"]
+        if panic:
+            assert rows[-1]["panic_threshold_pe"] == (panic.get("threshold_pe") or "")
+            assert rows[-1]["panic_reference_points"] == (panic.get("reference_points") or "")
+            assert rows[-1]["panic_status"] == panic["status"]
         if proxy:
             assert rows[-1]["pe_proxy_symbol"] == proxy
             assert rows[-1]["pe_date_basis"] == selected["pe_date_basis"]
@@ -325,6 +404,7 @@ async def main():
             await expect(page.locator('[data-years="1"]')).to_have_attribute("aria-pressed", "true")
             await check_price_return(page, one_year)
             await check_panic_line(page, one_year, "pe")
+            assert one_year["panic_line"] == data["panic_line"]
             await expect(page.locator("#panic-threshold")).to_have_text(
                 f"≤ {display(data['panic_reference']['record']['threshold_pe'])}×"
             )
@@ -334,6 +414,8 @@ async def main():
                 f"近10年平均 {float(ten_year['selected']['mean_pe']):,.2f}×"
             )
             await check_price_return(page, one_year)
+            assert ten_year["panic_line"] == data["panic_line"]
+            await check_panic_line(page, ten_year, "pe")
             await page.locator('[data-years="0"]').click()
             await expect(page.locator('[data-years="0"]')).to_have_attribute("aria-pressed", "true")
             await expect(page.locator("#table-description")).to_contain_text(
@@ -447,6 +529,9 @@ async def main():
                     "panic_reference_historical_guard_and_window_independence",
                     "panic_reference_overview_links_json_download_and_mobile",
                     "panic_horizontal_line_units_selected_eps_axis_extent_and_mobile_label",
+                    "rolling_panic_all_indices_overview_and_same_method",
+                    "rolling_panic_rest_lines_and_historical_no_lookahead",
+                    "rolling_panic_csv_and_window_independence",
                 ],
             }
             (OUTPUT / "web-validation.json").write_text(

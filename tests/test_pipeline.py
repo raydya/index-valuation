@@ -465,6 +465,130 @@ def test_direct_index_materialization_is_independent_and_idempotent(repository, 
     assert repository.history(SPEC, DAY + timedelta(days=1)) == []
 
 
+def test_panic_line_jsonb_restores_precise_values_and_dates(repository):
+    from index_valuation.index_series import method_for
+    from index_valuation.panic_lines import enrich_panic_lines
+
+    spec = replace(SPEC, band_min_observations=2)
+    repository.ensure_index(spec)
+    run = repository.start_run(spec, DAY)
+    points = enrich_panic_lines(
+        spec,
+        [
+            {
+                "trade_date": day,
+                "price": Decimal(1000),
+                "pe": Decimal(value),
+                "implied_eps": Decimal("50.123456789012345678901234567"),
+                "pe_source": "futu",
+                "pe_basis": "futu_valuation_pe",
+                "pe_usable": True,
+                "phase": "published",
+                "legacy_detail": {"value": Decimal("1.25")},
+            }
+            for day, value in (
+                (date(2019, 1, 1), "10.123456789012345678901234567"),
+                (date(2020, 1, 1), "20.234567890123456789012345678"),
+                (date(2024, 1, 1), "30.345678901234567890123456789"),
+            )
+        ],
+    )
+    repository.save_index_series(spec, method_for(spec), run, points)
+
+    stored = repository.index_series(spec.key, method_for(spec))
+    assert stored[-1]["panic_line"] == points[-1]["panic_line"]
+    assert stored[0]["panic_line"] == points[0]["panic_line"]
+    assert stored[-1]["legacy_detail"] == {"value": "1.25"}
+    assert isinstance(stored[-1]["panic_line"]["threshold_pe"], Decimal)
+    assert isinstance(stored[-1]["panic_line"]["history_end"], date)
+    assert repository.panic_lines({spec.key: spec}) == {spec.key: points[-1]["panic_line"]}
+
+
+def test_panic_line_lookup_uses_current_method_latest_row_and_as_of(repository):
+    from index_valuation.index_series import method_for
+
+    spec = replace(SPEC, valuation_source="futorest")
+    missing = replace(spec, key="no_stored_series")
+    repository.ensure_index(spec)
+    run = repository.start_run(spec, DAY)
+    start = date(2024, 1, 1)
+
+    def point(day, threshold):
+        return {
+            "trade_date": day,
+            "price": Decimal(1000),
+            "pe": Decimal(20),
+            "implied_eps": Decimal(50),
+            "panic_line": {"as_of": day, "threshold_pe": Decimal(threshold)},
+        }
+
+    early, late = point(start, "10.1"), point(start + timedelta(days=2), "12.3")
+    no_line = {**point(start + timedelta(days=1), "999"), "panic_line": None}
+    repository.save_index_series(spec, method_for(spec), run, [early, no_line, late])
+    repository.save_index_series(
+        spec,
+        "yahoo_spy_proxy_fred_daily_v1",
+        run,
+        [point(start + timedelta(days=3), "9999")],
+    )
+
+    assert repository.panic_lines([spec, missing]) == {
+        spec.key: late["panic_line"],
+        missing.key: None,
+    }
+    assert repository.panic_lines([spec], as_of=start) == {spec.key: early["panic_line"]}
+    assert repository.panic_lines([spec], as_of=start - timedelta(days=1)) == {spec.key: None}
+    # A missing latest line is explicit: do not silently reuse an earlier date.
+    assert repository.panic_lines([spec], as_of=start + timedelta(days=1)) == {spec.key: None}
+
+
+def test_index_refresh_recomputes_panic_lines_after_same_day_source_revision(repository, tmp_path):
+    from index_valuation.index_series import IndexSeries, method_for
+    from index_valuation.models import IndexSeriesRecord
+
+    spec = replace(SPEC, band_min_observations=2)
+    days = (date(2019, 1, 1), date(2020, 1, 1), date(2024, 1, 1))
+    repository.ensure_index(spec)
+    run = repository.start_run(spec, days[-1])
+    repository.save_observations(
+        run,
+        [
+            Observation(spec.quote_code, day, source, Decimal(1000), None, None, NOW, NOW)
+            for day in days
+            for source in ("futu", "eastmoney")
+        ],
+    )
+
+    def valuation(day, value):
+        return SourceValuation(
+            "futu", spec.quote_code, day, "pe", "futu_valuation_pe", Decimal(value), NOW, "raw"
+        )
+
+    repository.save_source_valuations(
+        run, [valuation(day, value) for day, value in zip(days, (10, 20, 30), strict=True)]
+    )
+    job = IndexSeries(repository, tmp_path)
+    first = job.refresh(spec)
+    assert first["latest"]["panic_line"]["threshold_pe"] == Decimal(11)
+
+    repository.save_source_valuations(run, [valuation(days[0], 40)])
+    second = job.refresh(spec)
+    assert second["latest"]["panic_line"]["threshold_pe"] == Decimal(22)
+    assert second["latest"]["panic_line"]["as_of"] == days[-1]
+    assert first["run_id"] != second["run_id"]
+
+    # Revising the current PE changes its horizontal point level, not its past-only P10.
+    repository.save_source_valuations(run, [valuation(days[-1], 60)])
+    third = job.refresh(spec)
+    latest_line = third["latest"]["panic_line"]
+    assert latest_line["threshold_pe"] == Decimal(22)
+    assert latest_line["reference_points"] == Decimal(1000) / 60 * 22
+    assert latest_line["reference_points"] != second["latest"]["panic_line"]["reference_points"]
+    assert repository.panic_lines([spec])[spec.key] == latest_line
+    assert repository.index_series(spec.key, method_for(spec))[-1]["panic_line"] == latest_line
+    assert count(repository, IndexSeriesRecord) == 3
+
+
 def test_official_priority_rebuild_preserves_legacy_method_and_exports(repository, tmp_path):
     import csv
     from io import StringIO

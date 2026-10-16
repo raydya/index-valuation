@@ -195,6 +195,9 @@ def test_web_api_and_csv_use_same_reproducible_data_without_credentials(tmp_path
         def index_series(self, key, method):
             return points()
 
+        def panic_lines(self, specs, as_of=None):
+            return {}
+
     app = create_app(repository=MemoryRepository(), specs={SPEC.key: SPEC})
     with TestClient(app) as client:
         assert client.get("/").status_code == 200

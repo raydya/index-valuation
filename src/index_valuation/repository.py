@@ -1,9 +1,11 @@
 """PostgreSQL storage, idempotency, and per-index job locking behind one interface."""
 
 import json
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from uuid import UUID, uuid4
 
 from sqlalchemy import select, text, update
@@ -52,6 +54,27 @@ def _upsert(connection, model, rows, key_columns):
         ),
         rows,
     )
+
+
+def _restore_panic_line(line):
+    """Restore the typed line without changing other stored detail fields."""
+    if line is None:
+        return None
+    result = dict(line)
+    for key in ("as_of", "history_start", "history_end"):
+        if result.get(key) is not None:
+            result[key] = date.fromisoformat(result[key])
+    for key in (
+        "threshold_pe",
+        "threshold_to_mean",
+        "quantile",
+        "reference_points",
+        "gap_pct",
+        "pe",
+    ):
+        if result.get(key) is not None:
+            result[key] = Decimal(str(result[key]))
+    return result
 
 
 class Repository:
@@ -485,9 +508,36 @@ class Repository:
         return [
             {
                 **row["details"],
+                **(
+                    {"panic_line": _restore_panic_line(row["details"]["panic_line"])}
+                    if "panic_line" in row["details"]
+                    else {}
+                ),
                 **{
                     k: row[k] for k in ("trade_date", "price", "pe", "implied_eps", "calculated_at")
                 },
             }
             for row in rows
         ]
+
+    def panic_lines(self, specs, as_of: date | None = None):
+        """Read each current method's latest stored line without loading its history."""
+        from index_valuation.index_series import method_for
+
+        if isinstance(specs, Mapping):
+            specs = specs.values()
+        result = {}
+        with self.engine.connect() as connection:
+            for spec in specs:
+                statement = select(IndexSeriesRecord.details["panic_line"]).where(
+                    IndexSeriesRecord.index_key == spec.key,
+                    IndexSeriesRecord.method == method_for(spec),
+                )
+                if as_of is not None:
+                    statement = statement.where(IndexSeriesRecord.trade_date <= as_of)
+                result[spec.key] = _restore_panic_line(
+                    connection.scalar(
+                        statement.order_by(IndexSeriesRecord.trade_date.desc()).limit(1)
+                    )
+                )
+        return result
