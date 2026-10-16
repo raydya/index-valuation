@@ -6,6 +6,8 @@
 
 2026-10-16起，美国全市场也已接入 Yahoo VTI 代理 PE，并以 Google Finance 日线核验 Yahoo 指数价格，详见 [VTI 接入记录](vti-proxy-2026-10-16.md)。下文“价格专用”描述仅代表首次接入时的状态。
 
+2026-10-16后续已按用户指定将标普500、纳指100切换至富途 REST 价格与指数 PE，停止 Yahoo 新增采集；美国全市场因无已验证 REST 映射暂停，旧历史只读。**当前运行规则以 [REST 接入记录](futu-rest-integration-2026-10-16.md)为准**。切换前的只读探针另见 [REST 实测记录](futu-rest-us-index-probe-2026-10-16.md)。
+
 ## ETF 与指数身份
 
 | ETF | 对应指数 | 系统标识 | 价格系列 |

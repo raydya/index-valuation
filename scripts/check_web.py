@@ -155,9 +155,20 @@ async def check_additional_indices(page, dashboards):
             await expect(page.locator("#benchmark-note")).to_contain_text(index["tracking_etfs"][0])
         if index["valuation"]["source"] == "none":
             await expect(page.locator("#quality-note")).to_contain_text("富途 OpenD 不支持")
+        if index.get("collection_enabled") is False:
+            await expect(page.locator("#quality-note")).to_contain_text("暂停")
+            await expect(page.locator("#pe-source-label")).to_contain_text("历史归档")
+        if index["valuation"]["source"] == "futorest":
+            assert data["method"] == "futorest_index_implied_daily_v1"
+            assert not index["valuation"].get("proxy_symbol")
+            await expect(page.locator("#pe-source-label")).to_contain_text("富途 REST")
+            assert selected["price_source"] in ("futorest", None)
+            assert not {"yahoo", "google", "eastmoney"}.intersection(selected["source_prices"])
+            assert data["panic_reference"]["comparison"]["status"] != "available"
+            await expect(page.locator("#panic-line")).to_have_count(0)
         proxy = index["valuation"].get("proxy_symbol")
         if proxy:
-            await expect(page.locator("#pe-title")).to_have_text("ETF 代理 PE")
+            await expect(page.locator("#pe-title")).to_contain_text("ETF 代理 PE")
             await expect(page.locator("#eps-title")).to_have_text("代理隐含 EPS")
             await expect(page.locator("#pe-source-label")).to_contain_text(proxy)
             await expect(page.locator("#quality-note")).to_contain_text("非指数官方估值")

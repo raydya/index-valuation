@@ -19,6 +19,23 @@ from index_valuation.providers.yahoo_etf_valuation import (
 from index_valuation.registry import load_indices
 
 SPECS = load_indices()
+# Legacy inputs and method remain readable after production moves to Futu REST.
+for key, proxy_symbol, official, yahoo_symbol in (
+    ("sp500", "SPY", "fred", "^GSPC"),
+    ("nasdaq100", "QQQ", "nasdaq", "^NDX"),
+    ("ustotal", "VTI", None, "^CRSPTM1"),
+):
+    SPECS[key] = replace(
+        SPECS[key],
+        valuation_source="yahooetf",
+        futorest_symbol=None,
+        yahoo_proxy_symbol=proxy_symbol,
+        yahoo_symbol=yahoo_symbol,
+        reference_history_source=official or "yahoo",
+        official_price_source=official,
+        price_sources=(official, "yahoo") if official else ("yahoo", "google"),
+        additional_history_sources=(("yahoo" if official else "google"), "yahooetf"),
+    )
 SPEC = SPECS["nasdaq100"]
 DAY = date(2026, 10, 14)
 NOW = datetime(2026, 10, 15, 1, tzinfo=UTC)
@@ -70,7 +87,7 @@ def proxy(spec=SPEC, value="20", day=DAY):
     "key,ticker,official",
     [("sp500", "SPY", "fred"), ("nasdaq100", "QQQ", "nasdaq"), ("ustotal", "VTI", None)],
 )
-def test_proxy_configuration_and_decimal_snapshot_are_explicit(key, ticker, official):
+def test_legacy_proxy_configuration_and_decimal_snapshot_are_explicit(key, ticker, official):
     spec = SPECS[key]
     assert spec.valuation_source == "yahooetf"
     assert spec.yahoo_proxy_symbol == ticker and spec.official_price_source == official

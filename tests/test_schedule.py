@@ -1,9 +1,11 @@
 import importlib.util
 import plistlib
 import subprocess
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -24,7 +26,7 @@ installer = load_script("install_schedule")
 runner = load_script("run_scheduled")
 
 
-@pytest.mark.parametrize("markets", [("CN", "HK"), ("US",)])
+@pytest.mark.parametrize("markets", [("CN", "HK"), ("US",), None])
 def test_market_update_includes_new_indices_without_touching_other_markets(
     markets, tmp_path, monkeypatch
 ):
@@ -33,12 +35,28 @@ def test_market_update_includes_new_indices_without_touching_other_markets(
     settings = SimpleNamespace(
         indices_file=ROOT / "indices.toml", data_dir=tmp_path, source_timeout=1
     )
-    collected, built = [], []
+    collected, built, paused = [], [], []
     monkeypatch.setattr(cli, "Settings", lambda: settings)
     monkeypatch.setattr(cli, "load_indices", lambda _: specs)
     monkeypatch.setattr(cli, "build_engine", lambda _: SimpleNamespace(dispose=lambda: None))
-    monkeypatch.setattr(cli, "Repository", lambda _: SimpleNamespace(index_series=lambda *_: []))
+    monkeypatch.setattr(
+        cli,
+        "Repository",
+        lambda _: SimpleNamespace(
+            index_series=lambda *_: [],
+            ensure_index=lambda *_: None,
+            lock=lambda *_: nullcontext(),
+            start_run=lambda *_: uuid4(),
+            finish_run=lambda run, status, report: paused.append(report),
+        ),
+    )
     monkeypatch.setattr(cli, "Pipeline", lambda *_: None)
+
+    def no_yahoo(*_args, **_kwargs):
+        raise AssertionError("Disabled Yahoo sources must not be constructed")
+
+    monkeypatch.setattr(cli, "YahooHistory", no_yahoo)
+    monkeypatch.setattr(cli, "YahooETFValuation", no_yahoo)
 
     def collect(spec, *_args, **_kwargs):
         collected.append(spec.key)
@@ -51,10 +69,17 @@ def test_market_update_includes_new_indices_without_touching_other_markets(
         cli, "HistoricalBackfill", lambda *_args, **_kwargs: SimpleNamespace(run=collect)
     )
     monkeypatch.setattr(cli, "IndexSeries", lambda *_: SimpleNamespace(refresh=refresh))
-    assert cli.main(["update-index", "--market", *markets]) == 0
-    expected = [s.key for s in specs.values() if s.market in markets]
+    selected = [s for s in specs.values() if markets is None or s.market in markets]
+    command = ["update-index", "--market", *markets] if markets else ["update-index", "--all"]
+    assert cli.main(command) == (2 if any(not s.collection_enabled for s in selected) else 0)
+    expected = [s.key for s in selected if s.collection_enabled]
     assert collected == built == expected
-    assert ("future_us" in collected) == ("US" in markets)
+    assert ("future_us" in collected) == (markets is None or "US" in markets)
+    assert [r["index"] for r in paused] == [s.key for s in selected if not s.collection_enabled]
+    for report in paused:
+        assert report["status"] == "blocked" and report["sources"] == {}
+        assert report["archived_method"] == cli.method_for(specs[report["index"]])
+        assert Path(report["report_path"]).exists()
 
 
 @pytest.mark.parametrize("extra", [["--all"], ["--index", "csi300"], ["invalid"]])

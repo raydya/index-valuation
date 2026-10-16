@@ -65,7 +65,14 @@ def create_app(*, repository=None, specs=None, settings=None):
     @app.get("/api/indices")
     def indices():
         return [
-            {"key": s.key, "name": s.name, "code": s.quote_code, "tracking_etfs": s.tracking_etfs}
+            {
+                "key": s.key,
+                "name": s.name,
+                "code": s.quote_code,
+                "tracking_etfs": s.tracking_etfs,
+                "collection_enabled": s.collection_enabled,
+                "collection_disabled_reason": s.collection_disabled_reason,
+            }
             for s in specs.values()
         ]
 

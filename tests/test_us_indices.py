@@ -19,7 +19,12 @@ from index_valuation.providers.yahoo_history import parse_history as parse_yahoo
 from index_valuation.registry import load_indices
 
 SPECS = load_indices()
-SP = SPECS["sp500"]
+SP = replace(
+    SPECS["sp500"],
+    yahoo_symbol="^GSPC",
+    valuation_source="none",
+    price_sources=("fred", "yahoo"),
+)
 DAY = date(2024, 7, 5)
 NOW = datetime(2024, 7, 6, tzinfo=UTC)
 

@@ -29,6 +29,8 @@ from index_valuation.providers.danjuan_history import DanjuanHistory
 from index_valuation.providers.eastmoney import EastmoneySource
 from index_valuation.providers.fred_history import FredHistory
 from index_valuation.providers.futu import FutuSource
+from index_valuation.providers.futu_rest import FutuRestHistory
+from index_valuation.providers.futu_rest_auth import FutuRestClient
 from index_valuation.providers.google_history import GoogleHistory
 from index_valuation.providers.gurufocus_valuation import GuruFocusValuation
 from index_valuation.providers.multpl_valuation import MultplValuation
@@ -38,6 +40,40 @@ from index_valuation.providers.yahoo_etf_valuation import YahooETFValuation
 from index_valuation.providers.yahoo_history import YahooHistory
 from index_valuation.registry import load_indices
 from index_valuation.repository import Repository
+
+
+def incremental_start(spec, existing):
+    """Overlap the latest stored date; a new method starts at its full history."""
+    start = spec.history_start_date or spec.inception_date
+    needs_first_pe = spec.valuation_source in {"futu", "futorest"} and not any(
+        row["pe"] is not None for row in existing
+    )
+    if existing and not needs_first_pe:
+        start = max(start, existing[-1]["trade_date"] - timedelta(days=14))
+    return start
+
+
+def record_paused_collection(repository, spec, output_dir, end=None):
+    """Audit a configured pause without contacting providers or rewriting history."""
+    repository.ensure_index(spec)
+    with repository.lock(spec.key):
+        run_id = repository.start_run(spec, end or datetime.now(ZoneInfo(spec.timezone)).date())
+        report = {
+            "mode": "direct_index_collection_paused",
+            "index": spec.key,
+            "run_id": str(run_id),
+            "status": "blocked",
+            "collection_enabled": False,
+            "reason": spec.collection_disabled_reason,
+            "archived_method": method_for(spec),
+            "sources": {},
+        }
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / f"{spec.key}-collection-paused-{run_id}.json"
+        report["report_path"] = str(path)
+        path.write_text(json_text(report), encoding="utf-8")
+        repository.finish_run(run_id, "blocked", report)
+        return report
 
 
 def check_database(settings: Settings, wait: int) -> int:
@@ -170,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
 
         uvicorn.run(create_app(settings=settings), host="127.0.0.1", port=args.port)
         return 0
-    engine = None
+    engine, rest_client = None, None
     try:
         specs = load_indices(settings.indices_file)
         if args.command == "list-indices":
@@ -219,7 +255,20 @@ def main(argv: list[str] | None = None) -> int:
             settings.data_dir / "exports",
         )
         results, exit_code = [], 0
+        rest_client = FutuRestClient(timeout=settings.source_timeout)
         for spec in selected:
+            if not spec.collection_enabled and args.command in {
+                "backfill-index",
+                "update-index",
+                "backfill-history",
+            }:
+                results.append(
+                    record_paused_collection(
+                        repository, spec, settings.data_dir / "exports", args.end
+                    )
+                )
+                exit_code = 2
+                continue
             reference_sources = {
                 "csindex": CSIHistory,
                 "cnindex": CNIndexHistory,
@@ -231,6 +280,9 @@ def main(argv: list[str] | None = None) -> int:
                 "danjuan": DanjuanHistory,
                 "multpl": MultplValuation,
                 "gurufocus": GuruFocusValuation,
+                "futorest": lambda archive, timeout: FutuRestHistory(
+                    archive, rest_client, timeout=timeout
+                ),
             }
             reference_source = (
                 reference_sources[spec.reference_history_source](archive, settings.source_timeout)
@@ -256,13 +308,7 @@ def main(argv: list[str] | None = None) -> int:
                     start = args.start or spec.history_start_date or spec.inception_date
                     if args.command == "update-index" and args.start is None:
                         existing = repository.index_series(spec.key, method_for(spec))
-                        # An index whose PE was permission-blocked needs its first
-                        # complete PE backfill when access becomes available.
-                        if existing and (
-                            not spec.futu_supported
-                            or any(row["pe"] is not None for row in existing)
-                        ):
-                            start = max(start, existing[-1]["trade_date"] - timedelta(days=14))
+                        start = incremental_start(spec, existing)
                     collection = HistoricalBackfill(
                         repository,
                         history_primary,
@@ -335,5 +381,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"任务失败：{error}", file=sys.stderr)
         return 1
     finally:
+        if rest_client is not None:
+            rest_client.close()
         if engine is not None:
             engine.dispose()

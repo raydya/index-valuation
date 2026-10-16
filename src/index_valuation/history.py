@@ -3,7 +3,7 @@
 import csv
 import logging
 from bisect import bisect_right
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
 from datetime import time as clock_time
 from itertools import combinations
@@ -274,21 +274,37 @@ class HistoricalBackfill:
         ) + tuple(self.additional_sources)
         for source in reference_sources:
             source_name = source.source_name
-            official_prices, official_pe = [], []
+            official_prices, official_pe, failures = [], [], []
             try:
                 batch = source.index_history(spec, start, end)
                 official_prices, official_pe = batch.observations, batch.valuations
-                if batch.failures:
-                    for key in (f"{source_name}_price", f"{source_name}_pe"):
-                        report["sources"][key] = {
-                            "status": "partial",
-                            "failed_ranges": batch.failures,
-                        }
+                failures = batch.failures
             except Exception as error:
                 for key in (f"{source_name}_price", f"{source_name}_pe"):
                     report["sources"][key] = {"status": "failed", "error": str(error)}
             datasets[f"{source_name}_price"] = official_prices
-            datasets[f"{source_name}_pe"] = official_pe
+            # A reference adapter may return PE, PB and PS for the same date.
+            # Keep one metric per dataset so date admission, coverage and PE
+            # comparisons never confuse different financial fields.
+            metrics = defaultdict(list, pe=[])
+            for row in official_pe:
+                metric = "pe" if row.metric in {"pe", "pe_ttm", "pe_ttm_proxy"} else row.metric
+                metrics[metric].append(row)
+            for metric, rows in metrics.items():
+                key = f"{source_name}_{metric}"
+                datasets[key] = rows
+            for failure in failures:
+                metric = {"prices": "price", "pe": "pe", "pb": "pb", "ps": "ps"}.get(
+                    failure.get("stage")
+                )
+                affected = (metric,) if metric else ("price", "pe")
+                for metric in affected:
+                    key = f"{source_name}_{metric}"
+                    datasets.setdefault(key, [])
+                    source_report = report["sources"].setdefault(
+                        key, {"status": "partial", "failed_ranges": []}
+                    )
+                    source_report["failed_ranges"].append(failure)
         if self.price_supplement_factory:
             try:
                 with self.price_supplement_factory() as supplement:

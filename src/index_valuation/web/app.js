@@ -5,7 +5,7 @@ const state = { index: new URLSearchParams(location.search).get('index'), chartY
 const colors = ['#258c88', '#469ca3', '#467bb5', '#706ea9', '#a08b6c', '#b47628'];
 const meanColor = '#b54d64';
 const panicColor = '#c44336';
-const sourceNames = { futu: '富途', csindex: '中证指数', cnindex: '国证指数', fred: 'FRED（官方数据分发）', nasdaq: 'Nasdaq 官方', yahoo: 'Yahoo Finance', google: 'Google Finance', yahooetf: 'Yahoo ETF 代理', baostock: 'BaoStock', eastmoney: '东方财富', danjuan: '雪球基金', multpl: 'Multpl', gurufocus: 'GuruFocus' };
+const sourceNames = { futu: '富途 OpenD', futorest: '富途 REST', csindex: '中证指数', cnindex: '国证指数', fred: 'FRED（官方数据分发）', nasdaq: 'Nasdaq 官方', yahoo: 'Yahoo Finance', google: 'Google Finance', yahooetf: 'Yahoo ETF 代理', baostock: 'BaoStock', eastmoney: '东方财富', danjuan: '雪球基金', multpl: 'Multpl', gurufocus: 'GuruFocus' };
 const peBasisNames = { multpl_reported_ttm_current_estimate: '过去12个月已报告盈利，当前 PE 为估算', gurufocus_published_pe_unconfirmed: '供应商指数 PE；盈利、加权及亏损处理未完整确认', csindex_published_rolling_pe: '中证发布的滚动 PE', danjuan_published_pe_ttm: '雪球基金发布的 PE TTM；与官方计算用股本口径分别保存' };
 const num = value => value == null || value === '' || !Number.isFinite(Number(value)) ? null : Number(value);
 const fmt = (value, digits = 2) => num(value) == null ? '—' : num(value).toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
@@ -61,18 +61,19 @@ async function load() {
 function render() {
   const d = state.data, p = d.selected;
   const proxy = d.index.valuation.proxy_symbol;
+  const paused = d.index.collection_enabled === false;
   document.title = `${d.index.name} · 指数估值`;
   setText('index-title', d.index.name);
   setText('code', d.index.code);
   setText('benchmark-note', d.index.description || '');
   $('benchmark-note').hidden = !d.index.description;
-  setText('pe-source-label', d.index.valuation.label);
+  setText('pe-source-label', `${paused ? '历史归档 · ' : ''}${d.index.valuation.label}`);
   setText('pe-title', proxy ? 'ETF 代理 PE' : '指数 PE');
   setText('chart-description', proxy ? `用 ${proxy} 代理 PE 换算不同估值倍数下的指数点位。` : '把每一天的盈利，放回不同的估值水平。');
   setText('eps-title', proxy ? '代理隐含 EPS' : '隐含 EPS');
   setText('eps-unit', proxy ? '按 ETF 代理 PE 换算的指数点数' : '指数盈利点数');
   $('eps-help').title = proxy ? `指数点位 ÷ Yahoo ${proxy} PE；为代理估值换算，不代表已核实的指数实际盈利。` : '同日指数点位 ÷ 主源指数 PE；单位为指数点，盈利期间跟随 PE 口径';
-  setText('valuation-source-label', d.index.futu_supported ? '富途口径' : '暂无 PB / PS');
+  setText('valuation-source-label', d.index.valuation.source === 'futorest' ? '富途 REST 口径' : d.index.futu_supported ? '富途口径' : '暂无 PB / PS');
   setText('price', fmt(p.price));
   setText('pe', fmt(p.pe, 3));
   $('pe').classList.toggle('error', p.pe_usable === false);
@@ -84,7 +85,7 @@ function render() {
   setText('percentile-label', `${windowName()} PE 分位`);
   setText('percentile', percent(p.percentile));
   setText('history-count', `${fmt(p.history_count, 0)} 个${d.index.valuation.history_frequency === 'weekly' ? '周' : '历史'}观测${p.history_count < d.minimum_history ? '，样本不足' : p.history_span_short ? `，历史不足${d.history_years}年` : ''}`);
-  setText('data-stamp', `数据截至 ${d.available_end}`);
+  setText('data-stamp', `${paused ? '暂停采集 · 历史截至' : '数据截至'} ${d.available_end}`);
   $('as-of').min = d.available_start;
   $('as-of').max = d.available_end;
   $('as-of').value = p.trade_date;
@@ -97,13 +98,15 @@ function render() {
   const sourceNote = proxy ? `采用 Yahoo ${proxy} ETF 代理 PE，非指数官方估值；按 ETF 最近已收盘行情日关联快照，PE 自身生效日未提供。历史独立积累，旧口径恐慌线不适用。` : d.index.valuation.source === 'csindex' ? '以中证指数官方数据为准；第三方差异保留提示，不影响官方口径的 EPS、估值带和历史统计。' : d.index.valuation.source === 'none' ? '当前展示指数价格；富途 OpenD 不支持该指数估值。' : `${d.index.valuation.label}的加权和亏损处理尚未完整核实；对照 PE 保留各自口径。`;
   const priceNote = p.price_status === 'unverified' ? (p.price_usable ? '采用官方点位，暂无独立价格对照。 ' : '当日点位仅有一个来源，待交叉核验。 ') : p.price_status === 'error' && p.price_usable ? '点位存在来源差异，采用指数官方点位。 ' : '';
   const usableLink = p.implied_eps == null && d.latest_complete_date && d.latest_complete_date !== p.trade_date ? `<button type="button" id="last-usable">查看 ${esc(d.latest_complete_date)} 的参考 band</button> ` : '';
-  $('quality-note').innerHTML = `${esc(waiting + priceNote + difference + sourceNote)} ${usableLink}<a href="#method-details">查看口径与核验</a>`;
+  const pauseNote = paused ? `【暂停新增采集】${d.index.collection_disabled_reason}以下为原方法历史归档，不代表当前行情。 ` : '';
+  $('quality-note').innerHTML = `${esc(pauseNote + waiting + priceNote + difference + sourceNote)} ${usableLink}<a href="#method-details">查看口径与核验</a>`;
   setText('basis-note', d.basis_note);
   setText('footer-range', `${d.available_start} 至 ${d.available_end} · ${fmt(d.available_sessions, 0)} 个交易日`);
   $('coverage').innerHTML = [
     ['指数点位', `${fmt(d.coverage.price, 0)} 条`], [d.index.valuation.label, `${fmt(d.coverage.pe, 0)} 条`],
     ['可用隐含 EPS', `${fmt(d.coverage.implied_eps, 0)} 条`], ['正式发布日期', d.index.inception_date],
     ['最新可用 EPS', d.latest_complete_date || '暂无'],
+    ['采集状态', paused ? `已暂停：${d.index.collection_disabled_reason}` : '按配置每日更新'],
     ['市场 / 计价币种', `${{ CN: '内地', HK: '香港', US: '美国' }[d.index.market]} / ${d.index.currency}（图表单位为点）`],
     ...(d.index.tracking_etfs.length ? [['对应 ETF', d.index.tracking_etfs.join(' / ')]] : []),
     ['当日 PE 对照来源', sourceNames[p.reference_pe_source] || '暂无'],

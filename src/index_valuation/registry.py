@@ -55,6 +55,7 @@ def load_indices(path: Path = Path("indices.toml")) -> dict[str, IndexSpec]:
             "multpl",
             "gurufocus",
             "yahooetf",
+            "futorest",
         }
         if spec.reference_history_source not in supported_sources | {"none"}:
             raise DataError("Unsupported reference_history_source")
@@ -69,19 +70,32 @@ def load_indices(path: Path = Path("indices.toml")) -> dict[str, IndexSpec]:
             raise DataError("US indices require America/New_York for DST-aware trading dates")
         if type(spec.futu_supported) is not bool:
             raise DataError("futu_supported must be a boolean")
+        if type(spec.collection_enabled) is not bool or not isinstance(
+            spec.collection_disabled_reason, str
+        ):
+            raise DataError("Collection policy must have a boolean flag and text reason")
+        if not spec.collection_enabled and not spec.collection_disabled_reason.strip():
+            raise DataError("A paused index collection requires an explicit reason")
         if spec.quote_code.startswith("CSI.") and (
             spec.futu_supported
             or spec.quote_code != f"CSI.{spec.provider_code}"
             or not spec.eastmoney_secid
         ):
             raise DataError("CSI namespace requires matching identity, explicit prices and no Futu")
-        if spec.valuation_source not in {"futu", "csindex", "danjuan", "yahooetf", "none"}:
+        if spec.valuation_source not in {
+            "futu",
+            "futorest",
+            "csindex",
+            "danjuan",
+            "yahooetf",
+            "none",
+        }:
             raise DataError("Unsupported valuation_source")
         if spec.price_sources or spec.official_price_source:
             if (
                 not spec.price_sources
                 or len(set(spec.price_sources)) != len(spec.price_sources)
-                or not set(spec.price_sources) <= {"fred", "nasdaq", "yahoo", "google"}
+                or not set(spec.price_sources) <= {"fred", "nasdaq", "yahoo", "google", "futorest"}
                 or not set(spec.price_sources) <= set(sources)
                 or spec.market != "US"
                 or spec.official_price_source not in {None, "fred", "nasdaq"}
@@ -101,6 +115,29 @@ def load_indices(path: Path = Path("indices.toml")) -> dict[str, IndexSpec]:
                 "US..NDX",
             ):
                 raise DataError("Official Nasdaq series must match the index identity")
+        if "futorest" in sources or spec.valuation_source == "futorest":
+            reference_mapping = {
+                "US..SPX": ("fred", "SP500"),
+                "US..NDX": ("nasdaq", "NDX"),
+            }
+            mapping = reference_mapping.get(spec.futorest_symbol)
+            if (
+                spec.market != "US"
+                or not mapping
+                or spec.futorest_symbol != spec.quote_code
+                or spec.futu_supported
+                or spec.valuation_source != "futorest"
+                or spec.reference_history_source != "futorest"
+                or spec.price_sources != ("futorest", mapping[0])
+                or set(sources) != set(spec.price_sources)
+                or spec.official_price_source is not None
+                or (spec.fred_series if mapping[0] == "fred" else spec.nasdaq_symbol) != mapping[1]
+                or spec.eastmoney_secid is not None
+                or spec.historical_price_source != "none"
+            ):
+                raise DataError(
+                    "Futu REST requires a verified US index and matching price reference"
+                )
         if "yahooetf" in sources or spec.valuation_source == "yahooetf":
             from index_valuation.providers.yahoo_etf_valuation import MAPPINGS
 

@@ -53,6 +53,7 @@ class IndexSpec:
     additional_history_sources: tuple[str, ...] = ()
     price_sources: tuple[str, ...] = ()
     official_price_source: str | None = None
+    futorest_symbol: str | None = None
     eastmoney_secid: str | None = None
     yahoo_symbol: str | None = None
     yahoo_proxy_symbol: str | None = None
@@ -62,6 +63,8 @@ class IndexSpec:
     tracking_etfs: tuple[str, ...] = ()
     description: str = ""
     futu_supported: bool = True
+    collection_enabled: bool = True
+    collection_disabled_reason: str = ""
     valuation_source: str = "futu"
     danjuan_symbol: str | None = None
 

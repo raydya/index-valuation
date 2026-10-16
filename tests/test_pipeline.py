@@ -541,7 +541,15 @@ def test_etf_proxy_rebuild_preserves_legacy_and_upserts_snapshot_metadata(
     from index_valuation.registry import load_indices
     from index_valuation.webapp import create_app
 
-    spec = replace(load_indices()[key], key="test_us_proxy")
+    # Retired Yahoo methods remain reproducible after deployment source changes.
+    spec = replace(
+        load_indices()[key],
+        key="test_us_proxy",
+        valuation_source="yahooetf",
+        yahoo_proxy_symbol="SPY" if key == "sp500" else "VTI",
+        official_price_source="fred" if key == "sp500" else None,
+        price_sources=tuple(source for source, _ in source_prices),
+    )
     ticker = spec.yahoo_proxy_symbol
     repository.ensure_index(spec)
     run = repository.start_run(spec, DAY)
@@ -606,3 +614,213 @@ def test_etf_proxy_rebuild_preserves_legacy_and_upserts_snapshot_metadata(
     row = list(csv.DictReader(StringIO(response.text.lstrip("\ufeff"))))[0]
     assert row["pe_proxy_symbol"] == ticker and row["pe_date_basis"] == DATE_BASIS
     assert row["pe_observed_at"] and Decimal(row["band_8x"]) == 320
+
+
+def test_rest_rebuild_preserves_proxy_history_and_upserts_source_values(repository, tmp_path):
+    import csv
+    from io import StringIO
+
+    from fastapi.testclient import TestClient
+
+    from index_valuation.index_series import IndexSeries, derive_points, method_for
+    from index_valuation.models import IndexSeriesRecord
+    from index_valuation.registry import load_indices
+    from index_valuation.webapp import create_app
+
+    spec = replace(load_indices()["sp500"], key="test_us_rest")
+    legacy_spec = replace(
+        spec,
+        valuation_source="yahooetf",
+        yahoo_proxy_symbol="SPY",
+        official_price_source="fred",
+        price_sources=("fred", "yahoo"),
+    )
+    repository.ensure_index(spec)
+    run = repository.start_run(spec, DAY)
+    prices = [
+        Observation(
+            spec.quote_code, DAY, source, Decimal(1000), None, None, NOW, NOW, currency="USD"
+        )
+        for source in ("futorest", "fred", "yahoo")
+    ]
+    old = SourceValuation(
+        "yahooetf",
+        spec.quote_code,
+        DAY,
+        "pe_ttm_proxy",
+        "yahoo_etf_spy_trailing_pe_proxy",
+        Decimal(30),
+        NOW,
+        "legacy.json",
+        raw={"proxy_symbol": "SPY"},
+    )
+    pe = SourceValuation(
+        "futorest",
+        spec.quote_code,
+        DAY,
+        "pe",
+        "futorest_valuation_pe",
+        Decimal(20),
+        NOW,
+        "rest-pe.json",
+    )
+    pb = replace(pe, metric="pb", basis="futorest_valuation_pb", value=Decimal(3))
+    repository.save_observations(run, prices)
+    repository.save_source_valuations(run, [old, pe, pb])
+    legacy_method = method_for(legacy_spec)
+    repository.save_index_series(
+        spec, legacy_method, run, derive_points(legacy_spec, prices, [old])
+    )
+    legacy_csv = tmp_path / f"{spec.key}-index-bands-{DAY}-{legacy_method}.csv"
+    legacy_csv.write_text("legacy proxy export")
+
+    job = IndexSeries(repository, tmp_path)
+    first = job.refresh(spec)
+    repository.save_source_valuations(run, [replace(pe, value=Decimal(25))])
+    report = job.refresh(spec)
+    assert report["status"] == "collected" and report["latest"]["price_source"] == "futorest"
+    assert report["csv"] == first["csv"] != str(legacy_csv)
+    assert legacy_csv.read_text() == "legacy proxy export"
+    assert count(repository, IndexSeriesRecord) == 2
+    assert count(repository, SourceValuationRecord) == 3
+    assert count(repository, DailyObservation) == 3
+    assert repository.index_series(spec.key, legacy_method)[0]["pe"] == 30
+
+    with TestClient(create_app(repository=repository, specs={spec.key: spec})) as client:
+        data = client.get(f"/api/indices/{spec.key}/dashboard").json()
+        point = data["selected"]
+        assert data["method"] == "futorest_index_implied_daily_v1"
+        assert Decimal(point["pe"]) == 25 and Decimal(point["implied_eps"]) == 40
+        assert point["pe_source"] == point["price_source"] == "futorest"
+        assert point["basis_status"] == "unconfirmed" and point["pe_proxy_symbol"] is None
+        assert set(point["source_prices"]) == {"futorest", "fred"}
+        assert Decimal(point["pb"]) == 3 and point["price_status"] == "pass"
+        response = client.get(f"/api/indices/{spec.key}/export.csv")
+    row = list(csv.DictReader(StringIO(response.text.lstrip("\ufeff"))))[0]
+    assert row["pe_basis"] == "futorest_valuation_pe" and row["pe_proxy_symbol"] == ""
+    assert Decimal(row["band_8x"]) == 320
+
+
+def test_rest_numeric_json_responses_survive_real_collection_and_jsonb_storage(
+    repository, tmp_path
+):
+    import json
+    from datetime import time
+    from types import SimpleNamespace
+    from zoneinfo import ZoneInfo
+
+    import httpx
+
+    from index_valuation.archive import Archive
+    from index_valuation.domain import ReferenceHistory
+    from index_valuation.history import HistoricalBackfill
+    from index_valuation.index_series import IndexSeries
+    from index_valuation.providers.futu_rest import FutuRestHistory
+    from index_valuation.providers.us_calendar import USCalendar
+    from index_valuation.registry import load_indices
+
+    spec = replace(load_indices()["sp500"], key="test_rest_json")
+    day = date(2024, 7, 5)
+    midnight = datetime.combine(day, time(), ZoneInfo(spec.timezone))
+    close_value = 3000.123456789
+    metric_values = {1: 25.123456789, 2: 4.123456789, 3: 2.123456789}
+    identity = {
+        "code": spec.quote_code,
+        "name": "S&P 500 Index",
+        "stock_type": "IDX",
+        "exchange": "US",
+    }
+
+    def respond(request):
+        if request.url.path.endswith("stock-basicinfo"):
+            data = {"basic_list": [identity]}
+            extra = {}
+        elif request.url.path.endswith("history-kline"):
+            data = {
+                "kline_list": [
+                    {
+                        "date": 20240705,
+                        "time_key": int(midnight.timestamp() * 1000),
+                        "time_zone": -4,
+                        "name": identity["name"],
+                        "close": close_value,
+                        "open": 2999.123456789,
+                        "high": 3001.987654321,
+                        "pe_ratio": 0.0,
+                    }
+                ]
+            }
+            extra = {"pagination": {"has_more": False}}
+        else:
+            assert request.url.path.endswith("valuation/detail")
+            metric = int(request.url.params["valuation_type"])
+            data = {
+                "valuation_type": metric,
+                "trend": {
+                    "historical_items": [
+                        {
+                            "time_str": day.isoformat(),
+                            "time": int(midnight.timestamp()),
+                            "value": metric_values[metric],
+                        }
+                    ]
+                },
+            }
+            extra = {}
+        # Real JSON numbers, not fixture strings: the adapter parses these as Decimal.
+        return httpx.Response(200, json={"ret_code": 0, "data": data, **extra})
+
+    reference = SimpleNamespace(
+        source_name="fred",
+        index_history=lambda *_: ReferenceHistory(
+            [
+                Observation(
+                    spec.quote_code,
+                    day,
+                    "fred",
+                    Decimal(str(close_value)),
+                    None,
+                    None,
+                    NOW,
+                    NOW,
+                    currency="USD",
+                )
+            ]
+        ),
+    )
+    archive = Archive(tmp_path / "raw")
+    with httpx.Client(
+        base_url="https://rest.example.test", transport=httpx.MockTransport(respond)
+    ) as client:
+        job = HistoricalBackfill(
+            repository,
+            None,
+            None,
+            FutuRestHistory(archive, client),
+            tmp_path / "exports",
+            calendar_source=USCalendar(archive),
+            additional_sources=(reference,),
+        )
+        first = job.run(spec, day, day)
+        second = job.run(spec, day, day)
+    assert first["status"] != "failed" and second["status"] != "failed"
+    for metric in ("price", "pe", "pb", "ps"):
+        assert second["sources"][f"futorest_{metric}"]["rows"] == 1
+        assert second["sources"][f"futorest_{metric}"]["status"] == "ok"
+    assert count(repository, DailyObservation) == 2
+    assert count(repository, SourceValuationRecord) == 3
+    observations, valuations = repository.index_inputs(spec)
+    saved_price = next(row for row in observations if row.source == "futorest")
+    assert saved_price.price == Decimal(str(close_value))
+    assert Decimal(saved_price.raw["close"]) == saved_price.price
+    assert Decimal(saved_price.raw["high"]) == Decimal("3001.987654321")
+    json.dumps(saved_price.raw)
+    for row in valuations:
+        assert Decimal(row.raw["value"]) == row.value
+        json.dumps(row.raw)
+    report = IndexSeries(repository, tmp_path / "exports").refresh(spec)
+    assert report["status"] == "collected"
+    assert report["latest"]["pe"] == Decimal(str(metric_values[1]))
+    assert report["latest"]["implied_eps"] == Decimal(str(close_value)) / Decimal(
+        str(metric_values[1])
+    )

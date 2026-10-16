@@ -99,13 +99,24 @@ uv run index-valuation build-index --index csi300
 
 美股 ETF 对应指数已接入：[VOO → 标普500](http://127.0.0.1:8000/?index=sp500)、[QQQ → 纳斯达克100](http://127.0.0.1:8000/?index=nasdaq100)、[VTI → Morningstar US Total Market](http://127.0.0.1:8000/?index=ustotal)（原 CRSP US Total Market，2026年7月更名）。展示价格回报指数点位，未用 ETF 价格代替指数。
 
-标普500和纳指100现按用户指定，分别采用 **Yahoo SPY、QQQ 的 ETF 代理 PE**，页面明确标注“ETF 代理 PE”“代理隐含 EPS”。点位分别取标普官方数据（FRED 分发）和 Nasdaq 官方接口，Yahoo 指数价格用于核验；对照缺失或不同仍采用有效官方值，官方值缺失则留空。这两个指数已停用东方财富、雪球、Multpl、GuruFocus 的新增采集和当前计算，旧记录和旧方法独立保留。
+标普500和纳指100已改用 **富途 REST 的指数价格和指数 PE**；FRED 分发的标普官方点位、Nasdaq 官方点位只作价格核验，不再采集 Yahoo Finance。估值详情接口单独提供 PE/PB/PS，K 线内的零 PE 不使用。新方法为 `futorest_index_implied_daily_v1`，与旧 ETF 代理和雪球历史分开保存；固定 band 保留8倍，历史均值/分位使用至少252个先前有效日度 PE。
 
-美国全市场采用 **Yahoo VTI 的 ETF 代理 PE**，复用相同采集、派生与网页流程；点位取 Yahoo `^CRSPTM1`，由 Google Finance 同日指数日线核验。没有价格对照或差异超过5%时，PE 仍保留，EPS/band 留空。已纳入每天09:00的美股更新。[VTI 代理接入与来源核验](docs/vti-proxy-2026-10-16.md)
+美国全市场的 VTI 基准暂未找到已验证的富途 REST 代码，**暂停新增采集**；页面明确标注暂停，并保留此前 Yahoo/Google 数据供只读查看。不会擅自换成 Wilshire 5000，也不会继续请求 Yahoo。
 
-Yahoo PE 是当前快照，按 ETF 最近已收盘行情日关联，PE 自身生效日期未提供；每天采集并积累，不伪造历史。固定倍数 band 包含8倍；只有一个 PE 日期时显示当日参考点，积累多个日期后才形成历史曲线。均值/分位需要252个先前日度观测；旧雪球恐慌阈值保留查阅，但不套用于新代理。[代理口径、日期规则与切换记录](docs/yahoo-etf-proxy-2026-10-15.md)，[原美股接入记录](docs/us-indices-2026-10-13.md)。
+富途 REST 不依赖 OpenD 登录，首次需要单独的只读 OAuth 授权；授权页仅选择 `quote:read`。令牌保存在本机 macOS Keychain，到期前自动续期，不写入代码、日志或 `.env`。授权失效时再运行授权命令：
 
-直接指数结果存入独立 `index_series` 表（迁移 `ec157f69d574`）；原始来源仍在 `daily_observations` 和 `source_valuations`。每日导出至 `data/exports/`；Yahoo 代理 CSV 文件名额外包含方法名，避免覆盖旧口径导出，具体路径见运行报告。来源原始响应保存在 `data/raw/`。`collected` 只表示采集/派生完成，**不表示 PE 的会计口径已独立核实**。
+```bash
+uv run --locked python scripts/auth_futu_rest.py
+# 仅查看是否已配置及到期时间，不打印令牌
+uv run --locked python scripts/auth_futu_rest.py --status
+# 验证自动续期能力
+uv run --locked python scripts/auth_futu_rest.py --refresh
+uv run --locked index-valuation update-index --market US
+```
+
+已安装的北京时间09:00美股任务自动使用新配置；运行用户的 Keychain 需可访问。REST 价格缺失时不以其他源替补；缺少同日官方价格对照时仍保留价格和 PE，EPS/band 留空。PE 的盈利期间和加权细节未完整核实，页面称“指数 PE”和“隐含 EPS”。实际历史范围、缺口与验证见 [富途 REST 接入记录](docs/futu-rest-integration-2026-10-16.md)；旧 [Yahoo 代理记录](docs/yahoo-etf-proxy-2026-10-15.md)、[VTI 记录](docs/vti-proxy-2026-10-16.md)保留查阅。
+
+直接指数结果存入独立 `index_series` 表（迁移 `ec157f69d574`）；原始来源仍在 `daily_observations` 和 `source_valuations`。每日导出至 `data/exports/`；美股 REST 和旧 Yahoo 代理 CSV 文件名额外包含方法名，避免覆盖旧口径导出，具体路径见运行报告。来源原始响应保存在 `data/raw/`。`collected` 只表示采集/派生完成，**不表示 PE 的会计口径已独立核实**。
 
 ## 可选：成分股采集与指数重算
 

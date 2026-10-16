@@ -24,6 +24,7 @@ BASIS_NOTE = (
 )
 PRICE_SOURCES = (
     "futu",
+    "futorest",
     "csindex",
     "cnindex",
     "fred",
@@ -36,6 +37,18 @@ PRICE_SOURCES = (
 
 
 def valuation_profile(spec):
+    if spec.valuation_source == "futorest":
+        return {
+            "source": "futorest",
+            "metric": "pe",
+            "basis": "futorest_valuation_pe",
+            "label": "富途 REST 指数 PE",
+            "history_frequency": "daily",
+            "sampling_note": (
+                "按富途 REST 估值详情的有效日度 PE 计算；盈利期间、加权及亏损处理未完整核实。"
+                "只使用本方法历史，不混入旧 ETF 代理或其他供应商 PE。"
+            ),
+        }
     if spec.valuation_source == "yahooetf":
         return {
             "source": "yahooetf",
@@ -86,6 +99,7 @@ def method_for(spec):
         return f"yahoo_{spec.yahoo_proxy_symbol.lower()}_proxy_{prices}_daily_v1"
     method = {
         "futu": METHOD,
+        "futorest": "futorest_index_implied_daily_v1",
         "csindex": "csindex_index_implied_daily_v2",
         "danjuan": "danjuan_index_implied_weekly_v1",
         "none": "index_price_only_v1",
@@ -94,6 +108,27 @@ def method_for(spec):
 
 
 def basis_note(spec):
+    note = _basis_note(spec)
+    if not spec.collection_enabled:
+        return (
+            f"已暂停新增采集：{spec.collection_disabled_reason}"
+            "以下为此前保存的方法和来源说明，页面只读展示历史归档，不代表当前行情。" + note
+        )
+    return note
+
+
+def _basis_note(spec):
+    if spec.valuation_source == "futorest":
+        return (
+            "指数收盘点位和 PE 均采用富途 REST；PE 来自独立估值详情接口，"
+            "不采用 K 线内为零的 PE 字段。指数官方点位仅作同日价格核验；"
+            "缺少富途价格时不以其他来源替补，没有同日价格对照或差异超过5%时，EPS/band 留空。"
+            "隐含 EPS = 同日富途指数收盘点位 / 富途指数 PE，单位为指数点；"
+            "盈利期间、加权及亏损处理尚未完整核实，不称为已核实的 TTM EPS。"
+            "未找到已确认同口径的独立 PE 对照，保留 unconfirmed 状态。"
+            "均值和分位只使用本方法此前的有效正 PE，至少252个历史观测；"
+            "旧 Yahoo ETF 代理、雪球 PE 及相应恐慌研究保留查阅，不混入新序列。"
+        )
     if spec.valuation_source == "yahooetf":
         if spec.official_price_source:
             prices = (
@@ -150,6 +185,7 @@ def pe_reference_keys(spec):
     """Keep comparison inputs separate from the primary PE's accounting basis."""
     return {
         "futu": (("csindex", "pe_ttm", "csindex_published_rolling_pe"),),
+        "futorest": (),
         "csindex": (("danjuan", "pe_ttm", "danjuan_published_pe_ttm"),),
         "danjuan": (
             ("multpl", "pe_ttm", "multpl_reported_ttm_current_estimate"),
@@ -183,6 +219,12 @@ def derive_points(spec, observations, valuations):
             profile["basis"],
         ):
             continue
+        if spec.valuation_source == "futorest" and (
+            row.source != "futorest"
+            or row.metric not in {"pe", "pb", "ps"}
+            or row.basis != f"futorest_valuation_{row.metric}"
+        ):
+            continue
         key = (row.trade_date, row.source, row.metric, row.basis)
         if key in values:
             raise DataError("Duplicate index valuation")
@@ -207,9 +249,12 @@ def derive_points(spec, observations, valuations):
             "csindex" if spec.valuation_source == "csindex" else None
         )
         official_price = available.get(official_source)
+        strict_primary = (
+            "futorest" if spec.valuation_source == "futorest" else spec.official_price_source
+        )
         price_row = (
-            official_price
-            if spec.official_price_source
+            available.get(strict_primary)
+            if strict_primary
             else official_price or next(iter(available.values()), None)
         )
         if price_row and price_row.quote_at > now:
@@ -233,7 +278,7 @@ def derive_points(spec, observations, valuations):
         )
         pe_row = values.get((day, profile["source"], profile["metric"], profile["basis"]))
         pe = pe_row.value if pe_row and pe_row.value.is_finite() and pe_row.value != 0 else None
-        if spec.official_price_source and price is None and pe is None:
+        if strict_primary and price is None and pe is None:
             continue
         reference_checks = [
             (
@@ -255,7 +300,8 @@ def derive_points(spec, observations, valuations):
         eps = price / pe if pe is not None and price_usable and pe_usable else None
         extras = {}
         for metric in ("pb", "ps"):
-            row = values.get((day, "futu", metric, f"futu_valuation_{metric}"))
+            extra_source = "futorest" if spec.valuation_source == "futorest" else "futu"
+            row = values.get((day, extra_source, metric, f"{extra_source}_valuation_{metric}"))
             extras[metric] = row.value if row else None
         points.append(
             {
@@ -436,6 +482,8 @@ def build_dashboard(spec, points, *, as_of=None, chart_years=5, history_years=5)
             "tracking_etfs": spec.tracking_etfs,
             "description": spec.description,
             "futu_supported": spec.futu_supported,
+            "collection_enabled": spec.collection_enabled,
+            "collection_disabled_reason": spec.collection_disabled_reason,
             "valuation": valuation_profile(spec),
             "official_price_source": spec.official_price_source,
             "price_sources": spec.price_sources,
@@ -535,8 +583,12 @@ class IndexSeries:
                 self.repository.save_index_series(spec, method_for(spec), run_id, points)
                 dashboard = build_dashboard(spec, points, chart_years=0)
                 self.output_dir.mkdir(parents=True, exist_ok=True)
-                # Preserve the exported legacy PE history when activating a new proxy basis.
-                suffix = f"-{method_for(spec)}" if spec.valuation_source == "yahooetf" else ""
+                # Preserve previous exports when activating a different US PE basis.
+                suffix = (
+                    f"-{method_for(spec)}"
+                    if spec.valuation_source in {"yahooetf", "futorest"}
+                    else ""
+                )
                 path = self.output_dir / (
                     f"{spec.key}-index-bands-{points[-1]['trade_date']}{suffix}.csv"
                 )
