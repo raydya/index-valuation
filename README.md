@@ -99,9 +99,13 @@ uv run index-valuation build-index --index csi300
 
 美股 ETF 对应指数已接入：[VOO → 标普500](http://127.0.0.1:8000/?index=sp500)、[QQQ → 纳斯达克100](http://127.0.0.1:8000/?index=nasdaq100)、[VTI → Morningstar US Total Market](http://127.0.0.1:8000/?index=ustotal)（原 CRSP US Total Market，2026年7月更名）。展示价格回报指数点位，未用 ETF 价格代替指数。
 
-截至2026-10-13，三者分别保存17,520、10,337、3,906条价格。标普500和纳指100以雪球基金发布的 PE TTM 为主，分别有470、469条有效历史采样；每个已结束自然周最多计一个样本，最低52个周观测才显示均值和分位。2026-10-12的两条 PE 对照差异均超过5%，已标记并停用当天 EPS/band；可点击网页中的入口回看2026-10-08的参考 band。VTI 基准目前只有单源价格，PE/EPS/band 留空。[美股接入、数据来源和限制](docs/us-indices-2026-10-13.md)
+标普500和纳指100现按用户指定，分别采用 **Yahoo SPY、QQQ 的 ETF 代理 PE**，页面明确标注“ETF 代理 PE”“代理隐含 EPS”。点位分别取标普官方数据（FRED 分发）和 Nasdaq 官方接口，Yahoo 指数价格用于核验；对照缺失或不同仍采用有效官方值，官方值缺失则留空。这两个指数已停用东方财富、雪球、Multpl、GuruFocus 的新增采集和当前计算，旧记录和旧方法独立保留。
 
-直接指数结果存入独立 `index_series` 表（迁移 `ec157f69d574`）；原始来源仍在 `daily_observations` 和 `source_valuations`。每日导出 `data/exports/指数标识-index-bands-日期.csv`，来源原始响应保存在 `data/raw/`。`collected` 只表示采集/派生完成，**不表示富途指数 PE 的会计口径已独立核实**。
+美国全市场采用 **Yahoo VTI 的 ETF 代理 PE**，复用相同采集、派生与网页流程；点位取 Yahoo `^CRSPTM1`，由 Google Finance 同日指数日线核验。没有价格对照或差异超过5%时，PE 仍保留，EPS/band 留空。已纳入每天09:00的美股更新。[VTI 代理接入与来源核验](docs/vti-proxy-2026-10-16.md)
+
+Yahoo PE 是当前快照，按 ETF 最近已收盘行情日关联，PE 自身生效日期未提供；每天采集并积累，不伪造历史。固定倍数 band 包含8倍；只有一个 PE 日期时显示当日参考点，积累多个日期后才形成历史曲线。均值/分位需要252个先前日度观测；旧雪球恐慌阈值保留查阅，但不套用于新代理。[代理口径、日期规则与切换记录](docs/yahoo-etf-proxy-2026-10-15.md)，[原美股接入记录](docs/us-indices-2026-10-13.md)。
+
+直接指数结果存入独立 `index_series` 表（迁移 `ec157f69d574`）；原始来源仍在 `daily_observations` 和 `source_valuations`。每日导出至 `data/exports/`；Yahoo 代理 CSV 文件名额外包含方法名，避免覆盖旧口径导出，具体路径见运行报告。来源原始响应保存在 `data/raw/`。`collected` 只表示采集/派生完成，**不表示 PE 的会计口径已独立核实**。
 
 ## 可选：成分股采集与指数重算
 

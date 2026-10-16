@@ -12,7 +12,15 @@ from index_valuation.providers.gurufocus_valuation import parse_headline
 from index_valuation.providers.multpl_valuation import parse_current
 from index_valuation.registry import load_indices
 
-SP = load_indices()["sp500"]
+# Keep the retired method testable after the production configuration moves to an ETF proxy.
+SP = replace(
+    load_indices()["sp500"],
+    valuation_source="danjuan",
+    danjuan_symbol="SP500",
+    price_sources=(),
+    official_price_source=None,
+    band_min_observations=52,
+)
 DAY = date(2024, 7, 5)
 NOW = datetime(2024, 7, 6, tzinfo=UTC)
 STAMP = 1720108800000  # Shanghai midnight July 5; New York is still July 4.
@@ -59,7 +67,7 @@ def test_gurufocus_uses_dated_headline_not_stale_statistics():
 
 
 def test_fred_csv_identity_missing_holiday_and_final_close():
-    spec = load_indices()["nasdaq100"]
+    spec = replace(load_indices()["nasdaq100"], fred_series="NASDAQ100")
     text = "observation_date,NASDAQ100\n2024-07-04,.\n2024-07-05,20391.97\n"
     rows = parse_fred(text, spec, date(2024, 7, 4), DAY, NOW, "raw")
     assert len(rows) == 1 and rows[0].price == Decimal("20391.97")

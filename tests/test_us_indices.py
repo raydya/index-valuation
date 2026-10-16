@@ -12,7 +12,6 @@ from index_valuation.archive import Archive
 from index_valuation.domain import DataError, Observation, ReferenceHistory
 from index_valuation.history import HistoricalBackfill
 from index_valuation.index_series import build_dashboard, derive_points
-from index_valuation.providers.eastmoney import security_id
 from index_valuation.providers.nasdaq_history import NasdaqHistory
 from index_valuation.providers.nasdaq_history import parse_history as parse_nasdaq
 from index_valuation.providers.us_calendar import USCalendar
@@ -56,7 +55,7 @@ def test_etf_benchmarks_are_index_series_in_native_currency():
         assert spec.currency == "USD" and spec.market == "US"
         assert spec.timezone == "America/New_York" and not spec.futu_supported
         assert spec.quote_code != f"US.{etf}"
-    assert security_id(SPECS["nasdaq100"], "US..NDX") == "100.NDX100"
+    assert SPECS["nasdaq100"].eastmoney_secid is None
     assert SPECS["ustotal"].yahoo_symbol == "^CRSPTM1"  # Price, not CRSPTMT total return.
 
 
@@ -205,7 +204,7 @@ def test_us_price_only_pipeline_does_not_need_opend_and_keeps_pe_missing(tmp_pat
     )
     assert saved == [row] and report["trading_calendar"]["market"] == "US"
     assert report["sources"]["futu_pe"]["status"] == "unsupported"
-    points = derive_points(SP, [row, replace(row, source="eastmoney")], [])
+    points = derive_points(SP, [row, replace(row, source="fred")], [])
     assert points[0]["price_status"] == "pass"
     assert points[0]["pe"] is None and points[0]["implied_eps"] is None
     dashboard = build_dashboard(SP, points)

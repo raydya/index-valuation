@@ -51,8 +51,12 @@ class IndexSpec:
     history_start_date: date | None = None
     reference_history_source: str = "csindex"
     additional_history_sources: tuple[str, ...] = ()
+    price_sources: tuple[str, ...] = ()
+    official_price_source: str | None = None
     eastmoney_secid: str | None = None
     yahoo_symbol: str | None = None
+    yahoo_proxy_symbol: str | None = None
+    google_symbol: str | None = None
     nasdaq_symbol: str | None = None
     fred_series: str | None = None
     tracking_etfs: tuple[str, ...] = ()

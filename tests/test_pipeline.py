@@ -518,3 +518,91 @@ def test_official_priority_rebuild_preserves_legacy_method_and_exports(repositor
     assert Decimal(row["implied_eps"]) == 125
     assert Decimal(row["band_8x"]) == 1000
     assert row["price_status"] == row["pe_comparison_status"] == "error"
+
+
+@pytest.mark.parametrize(
+    "key,source_prices,status,legacy_source",
+    [
+        ("sp500", (("fred", 1000), ("yahoo", 2000)), "error", "danjuan"),
+        ("ustotal", (("yahoo", 1000), ("google", 1000)), "pass", "none"),
+    ],
+)
+def test_etf_proxy_rebuild_preserves_legacy_and_upserts_snapshot_metadata(
+    repository, tmp_path, key, source_prices, status, legacy_source
+):
+    import csv
+    from io import StringIO
+
+    from fastapi.testclient import TestClient
+
+    from index_valuation.index_series import IndexSeries, derive_points, method_for
+    from index_valuation.models import IndexSeriesRecord
+    from index_valuation.providers.yahoo_etf_valuation import DATE_BASIS, basis_for
+    from index_valuation.registry import load_indices
+    from index_valuation.webapp import create_app
+
+    spec = replace(load_indices()[key], key="test_us_proxy")
+    ticker = spec.yahoo_proxy_symbol
+    repository.ensure_index(spec)
+    run = repository.start_run(spec, DAY)
+    prices = [
+        Observation(
+            spec.quote_code, DAY, source, Decimal(value), None, None, NOW, NOW, currency="USD"
+        )
+        for source, value in (*source_prices, ("eastmoney", 3000))
+    ]
+    old = SourceValuation(
+        "danjuan",
+        spec.quote_code,
+        DAY,
+        "pe_ttm",
+        "danjuan_published_pe_ttm",
+        Decimal(30),
+        NOW,
+        "old.json",
+    )
+    proxy = SourceValuation(
+        "yahooetf",
+        spec.quote_code,
+        DAY,
+        "pe_ttm_proxy",
+        basis_for(ticker),
+        Decimal(20),
+        NOW,
+        "etf.json",
+        raw={"proxy_symbol": ticker, "date_basis": DATE_BASIS, "pe_effective_date": None},
+    )
+    repository.save_observations(run, prices)
+    repository.save_source_valuations(run, [old, proxy])
+    legacy_spec = replace(
+        spec, valuation_source=legacy_source, official_price_source=None, price_sources=()
+    )
+    legacy_method = method_for(legacy_spec)
+    repository.save_index_series(
+        spec, legacy_method, run, derive_points(legacy_spec, prices, [old])
+    )
+    old_csv = tmp_path / f"{spec.key}-index-bands-{DAY}.csv"
+    old_csv.write_text("legacy export")
+    job = IndexSeries(repository, tmp_path)
+    first = job.refresh(spec)
+    repository.save_source_valuations(run, [replace(proxy, value=Decimal(25))])
+    report = job.refresh(spec)
+    assert report["csv"] == first["csv"] != str(old_csv)
+    assert old_csv.read_text() == "legacy export"
+    assert count(repository, IndexSeriesRecord) == 2
+    assert count(repository, SourceValuationRecord) == 2
+    assert repository.index_series(spec.key, legacy_method)[0]["pe"] == (
+        30 if legacy_source == "danjuan" else None
+    )
+    with TestClient(create_app(repository=repository, specs={spec.key: spec})) as client:
+        data = client.get(f"/api/indices/{spec.key}/dashboard").json()
+        point = data["selected"]
+        assert point["basis_status"] == "etf_proxy" and point["pe_proxy_symbol"] == ticker
+        assert Decimal(point["pe"]) == 25 and Decimal(point["implied_eps"]) == 40
+        assert point["price_status"] == status and point["price_usable"]
+        assert point["pe_date_basis"] == DATE_BASIS
+        assert set(point["source_prices"]) == set(spec.price_sources)
+        response = client.get(f"/api/indices/{spec.key}/export.csv")
+    row = list(csv.DictReader(StringIO(response.text.lstrip("\ufeff"))))[0]
+    assert row["pe_proxy_symbol"] == ticker and row["pe_date_basis"] == DATE_BASIS
+    assert row["pe_observed_at"] and Decimal(row["band_8x"]) == 320

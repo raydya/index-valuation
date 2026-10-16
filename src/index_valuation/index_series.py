@@ -11,6 +11,8 @@ from zoneinfo import ZoneInfo
 from index_valuation.archive import json_text
 from index_valuation.domain import DataError
 from index_valuation.performance import price_return_summary
+from index_valuation.providers.yahoo_etf_valuation import METRIC as ETF_PE_METRIC
+from index_valuation.providers.yahoo_etf_valuation import basis_for as etf_pe_basis
 from index_valuation.quality import compare_value
 from index_valuation.valuation import quantile
 
@@ -20,10 +22,33 @@ BASIS_NOTE = (
     "采用富途指数 PE，盈利期、加权及亏损处理尚未完整核实。隐含 EPS = 同日点位 / PE，"
     "单位为指数点；不标为已核实的 TTM EPS。其他来源的参考 PE 独立展示，未混入富途历史序列。"
 )
-PRICE_SOURCES = ("futu", "csindex", "cnindex", "fred", "nasdaq", "yahoo", "baostock", "eastmoney")
+PRICE_SOURCES = (
+    "futu",
+    "csindex",
+    "cnindex",
+    "fred",
+    "nasdaq",
+    "yahoo",
+    "google",
+    "baostock",
+    "eastmoney",
+)
 
 
 def valuation_profile(spec):
+    if spec.valuation_source == "yahooetf":
+        return {
+            "source": "yahooetf",
+            "metric": ETF_PE_METRIC,
+            "basis": etf_pe_basis(spec.yahoo_proxy_symbol),
+            "label": f"Yahoo {spec.yahoo_proxy_symbol} 代理 PE（TTM）",
+            "proxy_symbol": spec.yahoo_proxy_symbol,
+            "history_frequency": "daily",
+            "sampling_note": (
+                "每日保存 ETF PE 快照，按 ETF 最近已收盘行情日期关联；"
+                "PE 自身生效日未单独提供。仅用本代理已积累的历史，不混入旧指数 PE。"
+            ),
+        }
     if spec.valuation_source == "csindex":
         return {
             "source": "csindex",
@@ -56,15 +81,46 @@ def valuation_profile(spec):
 
 
 def method_for(spec):
-    return {
+    if spec.valuation_source == "yahooetf":
+        prices = spec.official_price_source or "_".join(spec.price_sources)
+        return f"yahoo_{spec.yahoo_proxy_symbol.lower()}_proxy_{prices}_daily_v1"
+    method = {
         "futu": METHOD,
         "csindex": "csindex_index_implied_daily_v2",
         "danjuan": "danjuan_index_implied_weekly_v1",
         "none": "index_price_only_v1",
     }[spec.valuation_source]
+    return f"{method}_official_prices_v1" if spec.official_price_source else method
 
 
 def basis_note(spec):
+    if spec.valuation_source == "yahooetf":
+        if spec.official_price_source:
+            prices = (
+                "标普官方收盘点位（FRED 分发）"
+                if spec.official_price_source == "fred"
+                else "Nasdaq 官方收盘点位"
+            )
+            price_note = (
+                f"价格采用{prices}，Yahoo 指数价格仅用于核验；对照缺失或存在差异仍采用有效官方值，"
+                "官方点位缺失时不以 Yahoo 替补。"
+            )
+        else:
+            price_note = (
+                "采用 Yahoo 价格回报指数收盘点位，以 Google Finance 同日指数日线作来源对照；"
+                "对照通过或差异不超过5%时生成代理 EPS/band，缺少对照或差异超过5%时留空。"
+                "两者可能共享上游分发，数值一致不代表独立指数编制核验；不使用 ETF 价格替代指数。"
+            )
+        return (
+            f"按用户指定，采用 Yahoo Finance 的 {spec.yahoo_proxy_symbol} ETF PE（TTM）"
+            "作为代理估值，"
+            "不是指数机构发布的 PE。代理隐含 EPS = 指数点位 / ETF 代理 PE，单位为指数点，"
+            "不代表核实后的指数实际盈利。"
+            f"{price_note}"
+            "PE 为采集时的快照，按 ETF 最近已收盘行情日关联，Yahoo 未单独提供 PE 生效日期；"
+            "不使用盘前盘后价格，不将当前 PE 回填到过去。新方法独立积累日度历史，"
+            "旧雪球估值与恐慌研究保留，但不混算均值、分位或恐慌线。"
+        )
     if spec.valuation_source == "csindex":
         return (
             "采用中证指数官方发布的滚动 PE；官方单张注明指数指标按成分的计算用股本计算。"
@@ -100,6 +156,7 @@ def pe_reference_keys(spec):
             ("gurufocus", "pe", "gurufocus_published_pe_unconfirmed"),
         ),
         "none": (),
+        "yahooetf": (),
     }[spec.valuation_source]
 
 
@@ -109,6 +166,8 @@ def derive_points(spec, observations, valuations):
     for row in observations:
         if row.symbol != spec.quote_code or row.currency != spec.currency:
             raise DataError("Index price identity or currency mismatch")
+        if spec.price_sources and row.source not in spec.price_sources:
+            continue
         if row.price_basis != "unadjusted_close" or not row.price.is_finite() or row.price <= 0:
             raise DataError("Index series requires finite unadjusted closing points")
         key = (row.trade_date, row.source)
@@ -118,6 +177,12 @@ def derive_points(spec, observations, valuations):
     for row in valuations:
         if row.symbol != spec.quote_code:
             raise DataError("Index valuation identity mismatch")
+        if spec.valuation_source == "yahooetf" and (row.source, row.metric, row.basis) != (
+            profile["source"],
+            profile["metric"],
+            profile["basis"],
+        ):
+            continue
         key = (row.trade_date, row.source, row.metric, row.basis)
         if key in values:
             raise DataError("Duplicate index valuation")
@@ -134,10 +199,19 @@ def derive_points(spec, observations, valuations):
         if day == now.date() and now.time() < time.fromisoformat(spec.close_time):
             continue
         available = {
-            source: prices[(day, source)] for source in PRICE_SOURCES if (day, source) in prices
+            source: prices[(day, source)]
+            for source in (spec.price_sources or PRICE_SOURCES)
+            if (day, source) in prices
         }
-        official_price = available.get("csindex") if spec.valuation_source == "csindex" else None
-        price_row = official_price or next(iter(available.values()), None)
+        official_source = spec.official_price_source or (
+            "csindex" if spec.valuation_source == "csindex" else None
+        )
+        official_price = available.get(official_source)
+        price_row = (
+            official_price
+            if spec.official_price_source
+            else official_price or next(iter(available.values()), None)
+        )
         if price_row and price_row.quote_at > now:
             continue
         price = price_row.price if price_row else None
@@ -159,6 +233,8 @@ def derive_points(spec, observations, valuations):
         )
         pe_row = values.get((day, profile["source"], profile["metric"], profile["basis"]))
         pe = pe_row.value if pe_row and pe_row.value.is_finite() and pe_row.value != 0 else None
+        if spec.official_price_source and price is None and pe is None:
+            continue
         reference_checks = [
             (
                 values[(day, *key)],
@@ -191,7 +267,12 @@ def derive_points(spec, observations, valuations):
                 "price_source": price_row.source if price_row else None,
                 "pe_source": profile["source"] if pe is not None else None,
                 "pe_basis": profile["basis"] if pe_row else None,
-                "basis_status": "unconfirmed",
+                "basis_status": "etf_proxy"
+                if spec.valuation_source == "yahooetf"
+                else "unconfirmed",
+                "pe_proxy_symbol": pe_row.raw.get("proxy_symbol") if pe_row else None,
+                "pe_observed_at": pe_row.observed_at if pe_row else None,
+                "pe_date_basis": pe_row.raw.get("date_basis") if pe_row else None,
                 "price_status": price_status,
                 "price_usable": price_usable,
                 "pe_comparison_status": pe_check.status,
@@ -317,6 +398,9 @@ def build_dashboard(spec, points, *, as_of=None, chart_years=5, history_years=5)
                             "price_source",
                             "pe_source",
                             "pe_basis",
+                            "pe_proxy_symbol",
+                            "pe_observed_at",
+                            "pe_date_basis",
                             "basis_status",
                             "price_status",
                             "price_usable",
@@ -353,6 +437,8 @@ def build_dashboard(spec, points, *, as_of=None, chart_years=5, history_years=5)
             "description": spec.description,
             "futu_supported": spec.futu_supported,
             "valuation": valuation_profile(spec),
+            "official_price_source": spec.official_price_source,
+            "price_sources": spec.price_sources,
         },
         "method": method_for(spec),
         "basis_note": basis_note(spec),
@@ -400,6 +486,9 @@ def series_csv(dashboard):
         "price_source",
         "pe_source",
         "pe_basis",
+        "pe_proxy_symbol",
+        "pe_observed_at",
+        "pe_date_basis",
         "basis_status",
         "price_status",
         "price_usable",
@@ -446,7 +535,11 @@ class IndexSeries:
                 self.repository.save_index_series(spec, method_for(spec), run_id, points)
                 dashboard = build_dashboard(spec, points, chart_years=0)
                 self.output_dir.mkdir(parents=True, exist_ok=True)
-                path = self.output_dir / f"{spec.key}-index-bands-{points[-1]['trade_date']}.csv"
+                # Preserve the exported legacy PE history when activating a new proxy basis.
+                suffix = f"-{method_for(spec)}" if spec.valuation_source == "yahooetf" else ""
+                path = self.output_dir / (
+                    f"{spec.key}-index-bands-{points[-1]['trade_date']}{suffix}.csv"
+                )
                 path.write_text(series_csv(dashboard), encoding="utf-8")
                 report = {
                     "mode": "direct_index",
@@ -460,7 +553,7 @@ class IndexSeries:
                     "last_date": points[-1]["trade_date"],
                     "rows": len(points),
                     "coverage": dashboard["coverage"],
-                    "basis_status": "unconfirmed",
+                    "basis_status": dashboard["selected"]["basis_status"],
                     "basis_note": basis_note(spec),
                     "latest_complete_date": dashboard["latest_complete_date"],
                     "latest": dashboard["selected"],

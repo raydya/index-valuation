@@ -22,6 +22,8 @@ def load_indices(path: Path = Path("indices.toml")) -> dict[str, IndexSpec]:
             values["tracking_etfs"] = tuple(values["tracking_etfs"])
         if "additional_history_sources" in values:
             values["additional_history_sources"] = tuple(values["additional_history_sources"])
+        if "price_sources" in values:
+            values["price_sources"] = tuple(values["price_sources"])
         for field in ("inception_date", "history_start_date"):
             if isinstance(values.get(field), str):
                 values[field] = date.fromisoformat(values[field])
@@ -47,10 +49,12 @@ def load_indices(path: Path = Path("indices.toml")) -> dict[str, IndexSpec]:
             "cnindex",
             "nasdaq",
             "yahoo",
+            "google",
             "fred",
             "danjuan",
             "multpl",
             "gurufocus",
+            "yahooetf",
         }
         if spec.reference_history_source not in supported_sources | {"none"}:
             raise DataError("Unsupported reference_history_source")
@@ -71,8 +75,59 @@ def load_indices(path: Path = Path("indices.toml")) -> dict[str, IndexSpec]:
             or not spec.eastmoney_secid
         ):
             raise DataError("CSI namespace requires matching identity, explicit prices and no Futu")
-        if spec.valuation_source not in {"futu", "csindex", "danjuan", "none"}:
+        if spec.valuation_source not in {"futu", "csindex", "danjuan", "yahooetf", "none"}:
             raise DataError("Unsupported valuation_source")
+        if spec.price_sources or spec.official_price_source:
+            if (
+                not spec.price_sources
+                or len(set(spec.price_sources)) != len(spec.price_sources)
+                or not set(spec.price_sources) <= {"fred", "nasdaq", "yahoo", "google"}
+                or not set(spec.price_sources) <= set(sources)
+                or spec.market != "US"
+                or spec.official_price_source not in {None, "fred", "nasdaq"}
+                or (
+                    spec.official_price_source
+                    and spec.price_sources[0] != spec.official_price_source
+                )
+            ):
+                raise DataError("US price policy requires collected sources and a valid primary")
+            if spec.official_price_source == "fred" and (spec.fred_series, spec.quote_code) not in {
+                ("SP500", "US..SPX"),
+                ("NASDAQ100", "US..NDX"),
+            }:
+                raise DataError("Official FRED series must match the index identity")
+            if spec.official_price_source == "nasdaq" and (spec.nasdaq_symbol, spec.quote_code) != (
+                "NDX",
+                "US..NDX",
+            ):
+                raise DataError("Official Nasdaq series must match the index identity")
+        if "yahooetf" in sources or spec.valuation_source == "yahooetf":
+            from index_valuation.providers.yahoo_etf_valuation import MAPPINGS
+
+            if spec.market != "US" or MAPPINGS.get(spec.yahoo_proxy_symbol) != spec.quote_code:
+                raise DataError("Yahoo ETF proxy must match the configured index")
+            if (
+                spec.valuation_source != "yahooetf"
+                or "yahooetf" not in sources
+                or not spec.price_sources
+                or set(sources) != {*spec.price_sources, "yahooetf"}
+                or (
+                    spec.official_price_source
+                    and spec.price_sources != (spec.official_price_source, "yahoo")
+                )
+                or (not spec.official_price_source and spec.price_sources != ("yahoo", "google"))
+            ):
+                raise DataError(
+                    "ETF proxy requires official prices or cross-checked Yahoo/Google index prices"
+                )
+        if "google" in sources:
+            from index_valuation.providers.google_history import MAPPINGS
+
+            if (
+                spec.market != "US"
+                or MAPPINGS.get(spec.google_symbol, (None,))[0] != spec.quote_code
+            ):
+                raise DataError("Google prices require a verified price-index mapping")
         if spec.valuation_source == "csindex" and (spec.market != "CN" or "csindex" not in sources):
             raise DataError("CSI primary PE requires its mainland history source")
         if "danjuan" in sources or spec.valuation_source == "danjuan":

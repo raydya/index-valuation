@@ -29,10 +29,12 @@ from index_valuation.providers.danjuan_history import DanjuanHistory
 from index_valuation.providers.eastmoney import EastmoneySource
 from index_valuation.providers.fred_history import FredHistory
 from index_valuation.providers.futu import FutuSource
+from index_valuation.providers.google_history import GoogleHistory
 from index_valuation.providers.gurufocus_valuation import GuruFocusValuation
 from index_valuation.providers.multpl_valuation import MultplValuation
 from index_valuation.providers.nasdaq_history import NasdaqHistory
 from index_valuation.providers.us_calendar import USCalendar
+from index_valuation.providers.yahoo_etf_valuation import YahooETFValuation
 from index_valuation.providers.yahoo_history import YahooHistory
 from index_valuation.registry import load_indices
 from index_valuation.repository import Repository
@@ -223,6 +225,8 @@ def main(argv: list[str] | None = None) -> int:
                 "cnindex": CNIndexHistory,
                 "nasdaq": NasdaqHistory,
                 "yahoo": YahooHistory,
+                "google": GoogleHistory,
+                "yahooetf": YahooETFValuation,
                 "fred": FredHistory,
                 "danjuan": DanjuanHistory,
                 "multpl": MultplValuation,

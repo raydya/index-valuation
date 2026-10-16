@@ -34,7 +34,11 @@ def panic_reference_for(dashboard, snapshot, specs):
         ):
             comparison["status"] = "before_study"
         elif record["threshold_pe"] is None:
-            comparison["status"] = record["status"]
+            comparison["status"] = (
+                "insufficient_history"
+                if record["status"] == "missing_pe" and pe is not None and pe.is_finite() and pe > 0
+                else record["status"]
+            )
         elif pe is None or not pe.is_finite() or pe <= 0:
             comparison["status"] = "missing_pe"
         elif selected.get("pe_usable") is False:

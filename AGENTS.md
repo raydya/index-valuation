@@ -16,6 +16,8 @@
 - 指数差异放在 [indices.toml](indices.toml)，来源差异放在 [providers](src/index_valuation/providers)。同源指数复用适配器，计算和网页复用通用实现，不复制一套按指数名称分支的流程。
 - 配置结构和校验分别在 [domain.py](src/index_valuation/domain.py)、[registry.py](src/index_valuation/registry.py)；来源工厂在 [cli.py](src/index_valuation/cli.py)，采集编排在 [history.py](src/index_valuation/history.py)，派生与统计在 [index_series.py](src/index_valuation/index_series.py)。新增数据源时需检查这些接入点，不能只增加一个 TOML 源名称。
 - 内地、香港指数继续以富途为主。用户已授权历史价格补源，以及美股使用其他 PE 主源并单独标注口径、交叉核验；在该范围内继续实施，无需重复询问已获授权的事项。缺少权限、供应商明确不支持和临时请求失败要分别记录。
+- 标普500、纳斯达克100现采用用户指定的 Yahoo ETF 代理 PE，分别映射 SPY、QQQ；以 `yahoo_proxy_symbol` 显式配置。价格使用标普官方数据经 FRED 分发、Nasdaq 官方接口，Yahoo 指数日线只作校验。这两个指数不再采集东方财富、雪球、Multpl、GuruFocus，旧原始记录和旧方法保留。配置和日期规则见 [Yahoo ETF 代理接入记录](docs/yahoo-etf-proxy-2026-10-15.md)。
+- 美国全市场使用同一 Yahoo ETF 代理流程，映射 VTI。指数点位取 Yahoo `^CRSPTM1`，Google Finance `CRSPTM1:INDEXNASDAQ` 的同日日线作对照；不把 VTI 交易价格或 `CRSPTMT` 全收益点位代入。它没有可用的官方价格主源，须满足通常的价格核验门槛后才计算 EPS/band。代码映射、公开页面采样限制与官方取数结果见 [VTI 代理接入记录](docs/vti-proxy-2026-10-16.md)。
 - 富途未收录的中证指数已有官方 PE 主源能力（`valuation_source = "csindex"`）；红利低波的代码映射、实际覆盖和限制见[接入记录](docs/divlowvol-index-2026-10-13.md)。`CSI.<代码>` 是内部标识，须关闭富途报价并显式映射其他价格源；内地交易日历仍独立采集。不能将中证主源与自己交叉核验，也不能把雪球旧代码返回的历史冒充当前有效接口。
 
 ## 新增指数流程
@@ -64,10 +66,13 @@ uv run --locked index-valuation build-index --index "$index_key"
 
 ## 数据口径与质量边界
 
-- 隐含 EPS = **同日指数收盘点位 / 配置主源 PE**，单位为指数点；band = 隐含 EPS × PE 倍数。数值计算使用 `Decimal`。ETF 价格、基金持仓 PE、预期 PE、CAPE 和全收益指数都不能直接替代这一组合；未充分核实盈利口径时称“隐含 EPS”。
+- 隐含 EPS = **同日指数收盘点位 / 配置主源 PE**，单位为指数点；band = 隐含 EPS × PE 倍数。数值计算使用 `Decimal`。默认不以 ETF 价格、基金持仓 PE、预期 PE、CAPE 或全收益指数替代；用户已明确允许的 Yahoo ETF 代理使用独立方法、口径和页面标识，称“代理隐含 EPS”，不称为指数实际盈利或官方 PE。
 - 每条来源记录保存证券身份、日期、来源、口径、观测时间及原始响应路径。日历外或身份错误的响应隔离并报告；缺失 PE/价格保持为空，不能前向填充、移到相邻日期或把缺失当零。发布日期前的回溯数据与正式发布后的数据分别标记。
 - 数值差异阈值为≤1%、1%—5%、>5%，分别标记通过、警告、重大差异。单源价格仍标为未核验，差异状态和计算资格分开保存。中证官方主源方法优先采用官方点位，第三方价格缺失或差异不阻止使用有效官方点位；非官方点位仍须独立价格核验通过或警告才推导 EPS/band。数值接近不等于会计口径一致。
-- 指数官方数据优先：`valuation_source = "csindex"` 使用 `csindex_index_implied_daily_v2`，第三方 PE 差异或缺少对照仅作提示，官方 PE 继续参与 EPS/band 及历史均值、分位；官方 PE 缺失时不以第三方替补。保留各源原值、来源、差异和旧方法结果，不把采用官方数据写成独立核验通过。美股替代 PE 仍在任一同日对照存在重大差异时设置 `pe_usable=false`，停用该日 EPS/band 及该 PE 的统计贡献。既有富途方法保留其独立口径与差异标记；变更历史政策须显式更新方法及说明。
+- 指数官方数据优先：`valuation_source = "csindex"` 使用 `csindex_index_implied_daily_v2`，第三方 PE 差异或缺少对照仅作提示，官方 PE 继续参与 EPS/band 及历史均值、分位；官方 PE 缺失时不以第三方替补。保留各源原值、来源、差异和旧方法结果，不把采用官方数据写成独立核验通过。旧雪球主源方法仍在同日 PE 对照存在重大差异时设置 `pe_usable=false`。既有富途方法保留其独立口径与差异标记；变更历史政策须显式更新方法及说明。
+- Yahoo ETF 代理使用 `valuation_source = "yahooetf"`。`price_sources` 限定新方法允许使用的价格源，已入库但被停用的源也必须排除；`official_price_source` 指定唯一采用的官方点位。Yahoo 校验缺失或存在差异不阻断有效官方价格，保留真实核验状态；官方点位缺失时不以 Yahoo 或其他旧来源补值。ETF 代理不与旧指数 PE 作同口径的5%门槛比较。
+- 没有官方主源的 Yahoo ETF 代理配置显式 `price_sources = ["yahoo", "google"]`，不设置 `official_price_source`，并校验 `google_symbol` 的价格指数身份。单源或点位差异超过5%时保留 PE、价格和质量状态，EPS/band 留空。Google 适配器只读取公开页面内标为日度的 OHLC 收盘值，不执行页面脚本、不使用实时报价或折线采样冒充收盘；页面只提供近期窗口，不能声称已补齐第二来源全历史。两种分发渠道可能共享上游，不能将数值一致称为独立指数编制核验。
+- Yahoo `summaryDetail.trailingPE.raw` 只提供当前快照；按 ETF 的 `regularMarketTime` 所属已收盘交易日关联，分别保存采集时间、ETF 身份、日期依据和 `pe_effective_date=null`，不得声称该行情时间就是 PE 生效时间。盘中快照不入库，不用 forward PE、持仓收益率、盘前盘后价格替代；历史请求仅接收快照自身日期，不能将当前 PE 回填到过去。新代理逐日积累历史，均值/分位至少252个先前观测，旧雪球恐慌研究只保留查阅，不用于新代理的恐慌线。
 - 均值和分位只使用同一方法的有效正 PE，排除当天及未来数据，样本阈值读取配置。富途和中证官方主源为日度采样；雪球作为主源时，统计取每个已结束自然周的最后有效值，排除当前周，避免每日快照使近期周重复加权。雪球仅作对照时不改变主源采样。其他采样频率须先定义对应方法，不能只降低样本阈值或伪造日度记录。
 - 权限拒绝、验证码或付费限制按真实失败记录；可用来源继续工作。人工核验的公开参考快照须记录真实来源、日期、取数方式和证据，不能宣称已建立稳定的自动核验来源。美股源的日期编码、Yahoo 日线降采样和指数代码映射等特殊处理见美股接入记录与适配器测试。
 

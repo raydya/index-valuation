@@ -75,15 +75,23 @@
 
 ## 美股来源与采样
 
-美股指数身份、交易日历、价格和 PE 适配器通过配置选择。VOO 对应标普500、QQQ 对应纳斯达克100，VTI 对应 Morningstar US Total Market（原 CRSP US Total Market）。均使用价格回报指数点位、USD 和纽约时区，不引入 ETF 价格、基金 PE 或全收益指数点位。
+美股指数身份、交易日历、价格和 PE 适配器通过配置选择。VOO 对应标普500、QQQ 对应纳斯达克100，VTI 对应 Morningstar US Total Market（原 CRSP US Total Market）。均使用价格回报指数点位、USD 和纽约时区，不引入 ETF 价格或全收益指数点位；用户授权的 ETF PE 代理规则如下。
 
-标普500、纳指100使用 `danjuan_index_implied_weekly_v1`：雪球基金公开 PE TTM 为主源，Multpl / GuruFocus 为独立口径对照。价格优先顺序为富途、中证、国证、FRED、Nasdaq、Yahoo、BaoStock、东方财富，仅已配置并入库的源参与。PE 取数日期必须和已收盘点位一致。美国日历使用锁定版本的 `pandas-market-calendars` NYSE 日历，归档规则版本及开收盘时间。
+标普500、纳指100现使用用户授权的 Yahoo SPY、QQQ ETF PE 代理，方法分别为 `yahoo_spy_proxy_fred_daily_v1`、`yahoo_qqq_proxy_nasdaq_daily_v1`。两者复用 `YahooETFValuation`，ETF 与指数身份通过显式映射校验。输入仍保存指数身份，来源标为 `yahooetf`，指标为 `pe_ttm_proxy`，口径包含代理 ETF 代码，原始记录另外保存 ETF 身份、采集时间和日期依据。
 
-雪球的长历史为周采样，当前快照每日采集。历史均值和分位每个已结束自然周最多取最后一个有效正 PE，排除当前周；统计窗口仍按自然年滚动，最低52个周观测。采样 PE 不填充到其他交易日，不和富途日度序列混合，近期快照增加也不会使近期周被重复加权。图表按实际 PE 采样日展示，逐日价格仍可查询与导出。
+标普官方点位经 FRED 获取，纳指从 Nasdaq 官方接口获取；`price_sources` 限制为各自官方源和 Yahoo，`official_price_source` 指定采用值。Yahoo 只作同日价格核验，缺少对照或差异超过5%仍采用有效官方点位；官方点位缺失则保持为空。东方财富、纳指旧 FRED 以及旧 PE 记录虽保留在数据库，也不会参与新方法。FRED 的标普历史仅提供近10年，因此新方法的官方价格历史不等于旧 Yahoo 全历史。美国日历仍使用 NYSE 规则及纽约时区。
 
-美股主源 PE 与同日对照差异超过5%时，保留 PE 和核验结果，但 `pe_usable=false`，不计算 EPS/band，也不把该点计入后续均值、分位。缺独立 PE 对照的历史 band 只作为主源口径参考，不能称为已经独立验证的盈利。
+Yahoo 页面 `summaryDetail.trailingPE.raw` 提供当前 ETF PE 快照。仅关联 `regularMarketTime` 所属的已收盘交易日，PE 自身生效日未知，不能将行情日期称为 PE 确切生效日期。按原始 `Decimal` 入库，记录 `pe_date_basis` 和 `pe_observed_at`；盘中、未来、请求区间外、无有效正 trailing PE 的快照不生成估值。历史回填不会将当前 PE 复制到其他日期，旧雪球、其他 ETF、forward PE 和持仓收益率不会填充缺口。
 
-VTI 基准当前采用 `index_price_only_v1`，缺少可靠 PE 以及第二个日度价格源，EPS 和估值带留空。详见[实际覆盖、来源链接及限制](us-indices-2026-10-13.md)。新增 CSV 字段 `history_frequency`、`pe_usable` 明确统计采样与派生资格。
+代理隐含 EPS = 官方指数点位 / ETF 代理 PE；固定倍数 band 继续保留8倍。新代理逐日积累历史，均值和分位只使用估值日以前的同代理有效正 PE，至少252个观测。旧雪球恐慌研究保留原来源和阈值，因口径不同暂停比较与画线。导出 CSV 包含 ETF 代理身份、日期依据和采集时间，文件名带新方法名以保留旧导出。完整实现与运行结果见 [代理接入记录](yahoo-etf-proxy-2026-10-15.md)。
+
+旧 `danjuan_index_implied_weekly_v1` 独立保留：雪球长历史为周采样，均值和分位每个已结束自然周最多取最后一个有效正 PE，最低52个周观测；不混入当前日度代理序列。
+
+旧雪球方法仍保留同日 PE 对照差异超过5%时停用 EPS/band 和统计贡献的规则。新 ETF 代理没有已核实同口径的独立 PE 对照，不将旧指数 PE 强作校验，也不将采用代理写成财务口径已验证。
+
+VTI 基准自2026-10-16采用 `yahoo_vti_proxy_yahoo_google_daily_v1`。PE 复用 `YahooETFValuation`，显式映射 VTI；点位采用 Yahoo `^CRSPTM1`，Google Finance `CRSPTM1:INDEXNASDAQ` 的近期日度 OHLC 作同日对照。`price_sources = ["yahoo", "google"]`，不设置 `official_price_source`。它遵循非官方价格的核验门槛：没有对照或差异超过5%时，EPS/band 留空，不能因采用 ETF 代理而放宽。旧 `index_price_only_v1` 历史独立保留。
+
+Google 适配器只解析公开 HTML 中 JSON 格式的数据数组，验证价格指数身份、日度周期、纽约时区以及已收盘日期；不执行脚本、不依赖 Google CLI、账号或浏览器。公开页面只提供近期日线，范围之外保持缺口。两种分发渠道可能共享上游，不将来源对照称为独立指数重算。详见 [VTI 接入记录](vti-proxy-2026-10-16.md)。CSV 字段 `history_frequency`、`pe_usable` 明确统计采样与派生资格。
 
 ## 本地运行与验证
 

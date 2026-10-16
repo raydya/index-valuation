@@ -5,7 +5,7 @@ const state = { index: new URLSearchParams(location.search).get('index'), chartY
 const colors = ['#258c88', '#469ca3', '#467bb5', '#706ea9', '#a08b6c', '#b47628'];
 const meanColor = '#b54d64';
 const panicColor = '#c44336';
-const sourceNames = { futu: '富途', csindex: '中证指数', cnindex: '国证指数', fred: 'FRED', nasdaq: 'Nasdaq', yahoo: 'Yahoo Finance', baostock: 'BaoStock', eastmoney: '东方财富', danjuan: '雪球基金', multpl: 'Multpl', gurufocus: 'GuruFocus' };
+const sourceNames = { futu: '富途', csindex: '中证指数', cnindex: '国证指数', fred: 'FRED（官方数据分发）', nasdaq: 'Nasdaq 官方', yahoo: 'Yahoo Finance', google: 'Google Finance', yahooetf: 'Yahoo ETF 代理', baostock: 'BaoStock', eastmoney: '东方财富', danjuan: '雪球基金', multpl: 'Multpl', gurufocus: 'GuruFocus' };
 const peBasisNames = { multpl_reported_ttm_current_estimate: '过去12个月已报告盈利，当前 PE 为估算', gurufocus_published_pe_unconfirmed: '供应商指数 PE；盈利、加权及亏损处理未完整确认', csindex_published_rolling_pe: '中证发布的滚动 PE', danjuan_published_pe_ttm: '雪球基金发布的 PE TTM；与官方计算用股本口径分别保存' };
 const num = value => value == null || value === '' || !Number.isFinite(Number(value)) ? null : Number(value);
 const fmt = (value, digits = 2) => num(value) == null ? '—' : num(value).toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
@@ -60,12 +60,18 @@ async function load() {
 
 function render() {
   const d = state.data, p = d.selected;
+  const proxy = d.index.valuation.proxy_symbol;
   document.title = `${d.index.name} · 指数估值`;
   setText('index-title', d.index.name);
   setText('code', d.index.code);
   setText('benchmark-note', d.index.description || '');
   $('benchmark-note').hidden = !d.index.description;
   setText('pe-source-label', d.index.valuation.label);
+  setText('pe-title', proxy ? 'ETF 代理 PE' : '指数 PE');
+  setText('chart-description', proxy ? `用 ${proxy} 代理 PE 换算不同估值倍数下的指数点位。` : '把每一天的盈利，放回不同的估值水平。');
+  setText('eps-title', proxy ? '代理隐含 EPS' : '隐含 EPS');
+  setText('eps-unit', proxy ? '按 ETF 代理 PE 换算的指数点数' : '指数盈利点数');
+  $('eps-help').title = proxy ? `指数点位 ÷ Yahoo ${proxy} PE；为代理估值换算，不代表已核实的指数实际盈利。` : '同日指数点位 ÷ 主源指数 PE；单位为指数点，盈利期间跟随 PE 口径';
   setText('valuation-source-label', d.index.futu_supported ? '富途口径' : '暂无 PB / PS');
   setText('price', fmt(p.price));
   setText('pe', fmt(p.pe, 3));
@@ -88,7 +94,7 @@ function render() {
   setText('table-range', `${d.series[0]?.trade_date || '—'} 至 ${p.trade_date}`);
   const waiting = p.pe == null ? '当日指数 PE 暂缺，隐含 EPS 和点位 band 暂不生成。 ' : p.pe_usable === false ? '当日 PE 存在重大来源差异，EPS 和点位 band 暂不生成，该 PE 不计入历史均值。 ' : p.implied_eps == null ? '当日价格尚未通过交叉核验，EPS 和点位 band 暂不生成。 ' : p.reference_pe == null ? '当日 PE 暂无独立来源对照，估值带为主源口径参考计算。 ' : '';
   const difference = num(p.pe_relative_error) > .01 ? `${sourceNames[p.pe_source] || '主源'} PE ${fmt(p.pe, 3)}×，${sourceNames[p.reference_pe_source] || '独立参考'} PE ${fmt(p.reference_pe, 2)}×，数值相差 ${percent(num(p.pe_relative_error) * 100)}。 ` : '';
-  const sourceNote = d.index.valuation.source === 'csindex' ? '以中证指数官方数据为准；第三方差异保留提示，不影响官方口径的 EPS、估值带和历史统计。' : d.index.valuation.source === 'none' ? '当前展示指数价格；富途 OpenD 不支持该指数估值。' : `${d.index.valuation.label}的加权和亏损处理尚未完整核实；对照 PE 保留各自口径。`;
+  const sourceNote = proxy ? `采用 Yahoo ${proxy} ETF 代理 PE，非指数官方估值；按 ETF 最近已收盘行情日关联快照，PE 自身生效日未提供。历史独立积累，旧口径恐慌线不适用。` : d.index.valuation.source === 'csindex' ? '以中证指数官方数据为准；第三方差异保留提示，不影响官方口径的 EPS、估值带和历史统计。' : d.index.valuation.source === 'none' ? '当前展示指数价格；富途 OpenD 不支持该指数估值。' : `${d.index.valuation.label}的加权和亏损处理尚未完整核实；对照 PE 保留各自口径。`;
   const priceNote = p.price_status === 'unverified' ? (p.price_usable ? '采用官方点位，暂无独立价格对照。 ' : '当日点位仅有一个来源，待交叉核验。 ') : p.price_status === 'error' && p.price_usable ? '点位存在来源差异，采用指数官方点位。 ' : '';
   const usableLink = p.implied_eps == null && d.latest_complete_date && d.latest_complete_date !== p.trade_date ? `<button type="button" id="last-usable">查看 ${esc(d.latest_complete_date)} 的参考 band</button> ` : '';
   $('quality-note').innerHTML = `${esc(waiting + priceNote + difference + sourceNote)} ${usableLink}<a href="#method-details">查看口径与核验</a>`;
@@ -103,8 +109,9 @@ function render() {
     ['当日 PE 对照来源', sourceNames[p.reference_pe_source] || '暂无'],
     ...(p.pe_references || []).map(r => [`${sourceNames[r.source] || r.source} PE`, `${fmt(r.pe, 3)}× · ${QUALITY[r.status]?.[0] || r.status} · ${peBasisNames[r.basis] || '供应商口径'}`]),
     ['历史统计采样', d.index.valuation.sampling_note],
+    ...(proxy ? [['PE 代理标的', proxy], ['PE 快照采集时间', p.pe_observed_at || '暂无'], ['PE 日期说明', '关联 ETF 最近已收盘行情日；PE 自身生效日未提供']] : []),
     ...Object.entries(d.coverage.price_sources).map(([source, count]) => [`${sourceNames[source] || source}点位`, `${fmt(count, 0)} 条`]),
-    ['数据性质', '供应商当前提供的历史序列'],
+    ['数据性质', proxy ? '指数收盘点位 + 每日采集的 ETF PE 快照' : '供应商当前提供的历史序列'],
   ].map(([key, value]) => `<dt>${esc(key)}</dt><dd>${esc(value)}</dd>`).join('');
   document.querySelectorAll('[data-years]').forEach(b => b.setAttribute('aria-pressed', String(Number(b.dataset.years) === state.chartYears)));
   renderChart();
@@ -119,9 +126,9 @@ function renderPanicReference() {
   const r = research.record, c = research.comparison, three = r?.three_year, one = r?.one_year;
   const returnPct = value => num(value) == null ? '—' : percent(num(value) * 100);
   const peRange = three?.observed_pe_range;
-  const statuses = { no_record: '尚无研究记录', insufficient_history: 'PE 历史不足5年', missing_pe: '缺少指数 PE' };
+  const statuses = { no_record: '尚无研究记录', insufficient_history: 'PE 历史不足5年', missing_pe: '研究时缺少 PE' };
   setText('panic-stamp', `研究日期 ${research.study_date}${r ? ` · ${sourceNames[r.source] || '无 PE 来源'} · 数据截至 ${r.cutoff}` : ''}`);
-  setText('panic-status', statuses[r?.status || 'no_record'] || (three.n ? '历史证据有限' : '暂无成熟样本'));
+  setText('panic-status', r?.status === 'missing_pe' && c.status === 'insufficient_history' ? 'PE 历史待积累' : statuses[r?.status || 'no_record'] || (three.n ? '历史证据有限' : '暂无成熟样本'));
   setText('panic-threshold', r?.threshold_pe == null ? '暂不设定' : `≤ ${fmt(r.threshold_pe)}×`);
   setText('panic-threshold-note', r?.threshold_to_mean == null ? (statuses[r?.status || 'no_record'] || '') : `研究日前5年 P10 · 均值的 ${returnPct(r.threshold_to_mean)}`);
   const gap = num(c.gap_pct);
@@ -154,7 +161,7 @@ function renderPanicReference() {
     <td><span class="quality ${esc(QUALITY[s.pe_comparison_status]?.[1] || 'missing')}">${esc(QUALITY[s.pe_comparison_status]?.[0] || '暂无对照')}</span></td>
   </tr>`).join('') || '<tr><td colspan="7" class="panic-empty">尚无成熟的非重叠3年窗口</td></tr>';
   setText('panic-rule', `历史联合条件：${research.rule}`);
-  setText('panic-history', r?.history_start ? `观察线历史区间：${r.history_start} 至 ${r.history_end}，${fmt(r.history_count, 0)} 个有效观测${r.source === 'danjuan' ? '（已结束自然周采样）' : '（日度采样）'}${r.history_complete ? '。' : '；不足完整5年，未设定观察线。'}` : '没有可用于观察线的 PE 历史。');
+  setText('panic-history', r?.history_start ? `观察线历史区间：${r.history_start} 至 ${r.history_end}，${fmt(r.history_count, 0)} 个有效观测${r.source === 'danjuan' ? '（已结束自然周采样）' : '（日度采样）'}${r.history_complete ? '。' : '；不足完整5年，未设定观察线。'}` : '研究时没有可用于观察线的 PE 历史。');
   $('panic-overview-rows').innerHTML = research.overview.map(row => `<tr${row.key === state.data.index.key ? ' class="panic-current" aria-current="true"' : ''}>
     <td><a href="/?index=${encodeURIComponent(row.key)}">${esc(row.name)}</a></td>
     <td>${row.threshold_pe == null ? esc(statuses[row.status] || '暂不设定') : `≤ ${fmt(row.threshold_pe)}×`}</td>
@@ -240,7 +247,7 @@ function renderChart() {
   const margin = { left: width < 540 ? 46 : 63, right: width < 540 ? 9 : 21, top: 24, bottom: 43 };
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
   const actualKey = state.mode === 'pe' ? 'pe' : 'price';
-  const actualLabel = state.mode === 'pe' ? '指数 PE' : '收盘点位';
+  const actualLabel = state.mode === 'pe' ? (state.data.index.valuation.proxy_symbol ? 'ETF 代理 PE' : '指数 PE') : '收盘点位';
   const valueFor = (row, def) => num(def.mean ? row[def.field] : row[def.field]?.[def.key]);
   const values = rows.flatMap(row => [num(row[actualKey]), ...definitions.map(def => valueFor(row, def))]).filter(v => v != null);
   const panicLine = panicLineDefinition();
@@ -277,7 +284,13 @@ function renderChart() {
   const tickIndexes = [...new Set(Array.from({ length: tickCount }, (_, i) => Math.round((rows.length - 1) * i / Math.max(1, tickCount - 1))))];
   tickIndexes.forEach(i => { content += `<text x="${x(i)}" y="${height - 13}" text-anchor="${i === 0 ? 'start' : i === rows.length - 1 ? 'end' : 'middle'}">${esc(rows[i].trade_date.slice(0, 7))}</text>`; });
   for (let i = 0; i < bands.length - 1; i++) content += `<path d="${area(bands[i], bands[i + 1])}" fill="${bands[i].color}" fill-opacity=".065"/>`;
-  definitions.forEach(def => { content += `<path${def.mean ? ' id="mean-line" stroke-dasharray="6 4"' : ''} d="${line(row => valueFor(row, def))}" fill="none" stroke="${def.color}" stroke-width="${def.mean ? 2 : 1.2}" stroke-opacity=".85" vector-effect="non-scaling-stroke"/>`; });
+  definitions.forEach(def => {
+    content += `<path${def.mean ? ' id="mean-line" stroke-dasharray="6 4"' : ''} d="${line(row => valueFor(row, def))}" fill="none" stroke="${def.color}" stroke-width="${def.mean ? 2 : 1.2}" stroke-opacity=".85" vector-effect="non-scaling-stroke"/>`;
+    rows.forEach((row, i) => {
+      const value = valueFor(row, def);
+      if (value != null && (i === 0 || valueFor(rows[i - 1], def) == null) && (i === rows.length - 1 || valueFor(rows[i + 1], def) == null)) content += `<circle class="band-observation" cx="${x(i)}" cy="${y(value)}" r="3" fill="${def.color}"/>`;
+    });
+  });
   content += `<path d="${line(row => num(row[actualKey]))}" fill="none" stroke="#203d88" stroke-width="2.3" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`;
   const last = rows[rows.length - 1];
   if (num(last[actualKey]) != null) content += `<circle cx="${x(rows.length - 1)}" cy="${y(num(last[actualKey]))}" r="4" fill="#203d88" stroke="white" stroke-width="2"/>`;

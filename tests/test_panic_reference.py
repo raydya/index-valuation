@@ -69,12 +69,25 @@ def test_dated_research_keeps_thresholds_and_overlapping_sample_counts_separate(
     ],
 )
 def test_short_history_and_missing_pe_never_receive_a_threshold(key, status):
-    result = panic_reference_for(dashboard(key), STUDY, SPECS)
+    result = panic_reference_for(dashboard(key, pe=None), STUDY, SPECS)
     assert result["record"]["threshold_pe"] is None
     assert result["record"]["threshold_to_mean"] is None
     assert result["record"]["three_year"]["median_annualized_return"] is None
     assert result["comparison"]["status"] == status
     assert result["comparison"]["gap_pct"] is None
+    assert result["comparison"]["reference_points"] is None
+
+
+def test_new_proxy_snapshot_does_not_rewrite_the_old_missing_pe_research():
+    data = dashboard(
+        "ustotal",
+        pe=Decimal("24.300972"),
+        pe_source="yahooetf",
+        pe_basis="yahoo_etf_vti_trailing_pe_proxy",
+    )
+    result = panic_reference_for(data, STUDY, SPECS)
+    assert result["record"]["status"] == "missing_pe"
+    assert result["comparison"]["status"] == "insufficient_history"
     assert result["comparison"]["reference_points"] is None
 
 

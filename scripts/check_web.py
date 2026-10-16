@@ -155,6 +155,30 @@ async def check_additional_indices(page, dashboards):
             await expect(page.locator("#benchmark-note")).to_contain_text(index["tracking_etfs"][0])
         if index["valuation"]["source"] == "none":
             await expect(page.locator("#quality-note")).to_contain_text("富途 OpenD 不支持")
+        proxy = index["valuation"].get("proxy_symbol")
+        if proxy:
+            await expect(page.locator("#pe-title")).to_have_text("ETF 代理 PE")
+            await expect(page.locator("#eps-title")).to_have_text("代理隐含 EPS")
+            await expect(page.locator("#pe-source-label")).to_contain_text(proxy)
+            await expect(page.locator("#quality-note")).to_contain_text("非指数官方估值")
+            assert selected["pe_proxy_symbol"] == proxy
+            official = index["official_price_source"]
+            if official:
+                if official in selected["source_prices"]:
+                    assert selected["price_source"] == official
+                else:
+                    assert selected["price_source"] is None and selected["price"] is None
+                    assert selected["price_status"] == "missing"
+                    assert selected["implied_eps"] is None and not selected["fixed"]
+                    await expect(page.locator("#price")).to_have_text("—")
+                    await expect(page.locator("#eps")).to_have_text("—")
+            else:
+                available = [s for s in index["price_sources"] if s in selected["source_prices"]]
+                assert selected["price_source"] == (available[0] if available else None)
+            if data["coverage"]["pe"] == 1 and selected["implied_eps"] is not None:
+                await expect(page.locator(".band-observation")).to_have_count(
+                    len(index["band_multiples"])
+                )
         if selected.get("pe_usable") is False:
             await expect(page.locator("#quality-note")).to_contain_text("重大来源差异")
             if data["latest_complete_date"]:
@@ -197,10 +221,14 @@ async def check_additional_indices(page, dashboards):
         path = OUTPUT / f"{key}-web-download.csv"
         await download.save_as(path)
         rows = list(csv.DictReader(path.open(encoding="utf-8-sig")))
-        assert rows[-1]["price"] == selected["price"]
+        assert rows[-1]["price"] == (selected["price"] or "")
         assert rows[-1]["pe"] == (selected["pe"] or "")
         assert rows[-1]["mean_pe"] == (selected["mean_pe"] or "")
         assert rows[-1]["trade_date"] == data["available_end"]
+        if proxy:
+            assert rows[-1]["pe_proxy_symbol"] == proxy
+            assert rows[-1]["pe_date_basis"] == selected["pe_date_basis"]
+            assert rows[-1]["pe_observed_at"]
         summary = data["price_return"]
         exported = {row["trade_date"]: row for row in rows}
         for endpoint in ("start", "end"):
