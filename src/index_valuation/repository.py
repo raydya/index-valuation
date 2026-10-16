@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import Engine
 
@@ -438,6 +438,65 @@ class Repository:
                 .first()
             )
         return dict(row) if row is not None else None
+
+    def scheduled_run_records(self, run_ids) -> list[dict]:
+        """Resolve explicit log/receipt IDs; never guess the last scheduled run."""
+        ids = [UUID(str(value)) for value in run_ids][:100]
+        if not ids:
+            return []
+        with self.engine.connect() as connection:
+            rows = connection.execute(
+                select(RunRecord.__table__).where(RunRecord.id.in_(ids))
+            ).mappings()
+            return [dict(row) for row in rows]
+
+    def scheduled_index_summaries(self, specs) -> dict:
+        """Current-method latest data only; independent of scheduled execution."""
+        from index_valuation.index_series import method_for
+
+        result = {}
+        with self.engine.connect() as connection:
+            for spec in specs.values():
+                scope = (
+                    IndexSeriesRecord.index_key == spec.key,
+                    IndexSeriesRecord.method == method_for(spec),
+                )
+                latest = (
+                    connection.execute(
+                        select(
+                            IndexSeriesRecord.trade_date,
+                            IndexSeriesRecord.implied_eps,
+                            IndexSeriesRecord.details,
+                        )
+                        .where(*scope)
+                        .order_by(IndexSeriesRecord.trade_date.desc())
+                        .limit(1)
+                    )
+                    .mappings()
+                    .first()
+                )
+                complete = connection.scalar(
+                    select(func.max(IndexSeriesRecord.trade_date)).where(
+                        *scope, IndexSeriesRecord.implied_eps.is_not(None)
+                    )
+                )
+                # A latest manual build is useful data evidence, never run evidence.
+                report = (
+                    connection.execute(
+                        select(RunRecord.status, RunRecord.started_at, RunRecord.report)
+                        .where(RunRecord.index_key == spec.key)
+                        .order_by(RunRecord.started_at.desc())
+                        .limit(1)
+                    )
+                    .mappings()
+                    .first()
+                )
+                result[spec.key] = {
+                    "latest": dict(latest) if latest else None,
+                    "complete_date": complete,
+                    "processing": dict(report) if report else None,
+                }
+        return result
 
     def index_inputs(self, spec):
         from index_valuation.domain import Observation, SourceValuation

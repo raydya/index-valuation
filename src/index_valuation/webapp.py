@@ -19,12 +19,13 @@ from index_valuation.index_series import build_dashboard, method_for, series_csv
 from index_valuation.panic_reference import load_panic_reference, panic_reference_for
 from index_valuation.registry import load_indices
 from index_valuation.repository import Repository
+from index_valuation.scheduled_tasks import ScheduledTasks
 
 WEB = Path(__file__).with_name("web")
 log = logging.getLogger(__name__)
 
 
-def create_app(*, repository=None, specs=None, settings=None):
+def create_app(*, repository=None, specs=None, settings=None, scheduled_tasks=None):
     engine = None
     if repository is None:
         settings = settings or Settings()
@@ -32,6 +33,7 @@ def create_app(*, repository=None, specs=None, settings=None):
         repository = Repository(engine)
     specs = specs if specs is not None else load_indices((settings or Settings()).indices_file)
     panic_reference = load_panic_reference()
+    scheduled_tasks = scheduled_tasks or ScheduledTasks(repository, specs)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -75,6 +77,10 @@ def create_app(*, repository=None, specs=None, settings=None):
             }
             for s in specs.values()
         ]
+
+    @app.get("/api/scheduled-tasks")
+    def get_scheduled_tasks():
+        return Response(json_text(scheduled_tasks.snapshot()), media_type="application/json")
 
     @app.get("/api/panic-reference")
     def get_panic_reference():

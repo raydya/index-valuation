@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import plistlib
 import subprocess
 from contextlib import nullcontext
@@ -99,6 +100,7 @@ def test_daily_jobs_forward_separate_market_scopes_and_preserve_partial_status(
         return SimpleNamespace(returncode=2)
 
     monkeypatch.setattr(runner.subprocess, "run", run)
+    monkeypatch.setattr(runner, "ROOT", tmp_path)
     jobs = installer.job_definitions(tmp_path)
     expected = [(17, ["CN", "HK"]), (9, ["US"])]
     for job, (hour, markets) in zip(jobs, expected, strict=True):
@@ -107,16 +109,48 @@ def test_daily_jobs_forward_separate_market_scopes_and_preserve_partial_status(
         assert runner.main(job["ProgramArguments"][2:]) == 2
         command, kwargs = calls[-1]
         assert command[1:] == ["update-index", "--market", *markets]
-        assert kwargs["timeout"] == 3600 and kwargs["cwd"] == ROOT
+        assert kwargs["timeout"] == 3600 and kwargs["cwd"] == tmp_path
+        receipt = (
+            tmp_path
+            / "data/scheduler/index-runs"
+            / ("asia.latest.json" if hour == 17 else "us.latest.json")
+        )
+        record = json.loads(receipt.read_text())
+        assert record["status"] == "partial" and record["exit_code"] == 2
+        assert record["started_at"] <= record["finished_at"]
     assert len({job["StandardOutPath"] for job in jobs}) == 2
 
 
-def test_scheduled_timeout_is_reported(monkeypatch):
+def test_scheduled_timeout_is_reported(tmp_path, monkeypatch):
     def run(command, **kwargs):
         raise subprocess.TimeoutExpired(command, kwargs["timeout"])
 
     monkeypatch.setattr(runner.subprocess, "run", run)
+    monkeypatch.setattr(runner, "ROOT", tmp_path)
     assert runner.main(["--market", "US"]) == 124
+    record = json.loads((tmp_path / "data/scheduler/index-runs/us.latest.json").read_text())
+    assert record["status"] == "timed_out" and record["exit_code"] == 124
+
+
+def test_scheduled_receipt_retains_run_ids_and_stdout_even_on_partial_failure(
+    tmp_path, monkeypatch, capsys
+):
+    report = {"mode": "direct_index", "run_id": str(uuid4()), "status": "collected"}
+    paused = {"mode": "direct_index_collection_paused", "run_id": str(uuid4())}
+
+    def run(command, **kwargs):
+        record = json.loads((tmp_path / "data/scheduler/index-runs/us.latest.json").read_text())
+        assert record["status"] == "running" and record["finished_at"] is None
+        kwargs["stdout"].write("provider noise\n{not JSON}\n")
+        kwargs["stdout"].write(json.dumps(report) + "\n" + json.dumps(paused))
+        return SimpleNamespace(returncode=2)
+
+    monkeypatch.setattr(runner, "ROOT", tmp_path)
+    monkeypatch.setattr(runner.subprocess, "run", run)
+    assert runner.main(["--market", "US"]) == 2
+    record = json.loads((tmp_path / "data/scheduler/index-runs/us.latest.json").read_text())
+    assert record["run_ids"] == [report["run_id"], paused["run_id"]]
+    assert report["run_id"] in capsys.readouterr().out
 
 
 def generated_jobs(root):

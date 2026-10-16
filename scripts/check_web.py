@@ -299,6 +299,11 @@ async def check_additional_indices(page, dashboards):
             await page.locator("#latest").click()
             await expect(page.locator("#as-of")).to_have_value(data["available_end"])
             await expect(page.locator("#pe")).to_have_text(display(selected["pe"], 3))
+        # The latest day can itself have no PE. In that case the visible date
+        # and dash are unchanged while the latest request is still in flight.
+        # Wait for export readiness rather than clicking a temporarily bare link.
+        await expect(page.locator("#chart-wrap")).to_have_attribute("aria-busy", "false")
+        await expect(page.locator("#export")).not_to_have_attribute("aria-disabled", "true")
         async with page.expect_download() as event:
             await page.locator("#export").click()
         download = await event.value

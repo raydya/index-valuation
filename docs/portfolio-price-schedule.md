@@ -46,5 +46,9 @@ launchctl print "gui/$(id -u)/cn.portfolio.quotes.daily.asia"
   `.result.md`、`.events.jsonl`、`.stderr.log`。检查结果文件中的报价日期、未更新项目和回读验证。
 - `--dry-run`只检查指令、日期与文件，不创建运行记录，也不启动Codex或访问表格。
 
+[估值系统的定时任务区](http://127.0.0.1:8000/#scheduled-tasks)自动读取上述日期状态文件与结果正文。
+进程退出0显示“已返回结果”，具体更新数量、真实报价日期和未更新项在展开后的执行结果中查看，
+不会仅凭退出码将所有报价标记为已核验。页面刷新只读取状态，不再次执行任务。
+
 停用时分别对两个每日标签执行`launchctl bootout`；如需以后登录也不加载，将其对应plist
 移出`~/Library/LaunchAgents`。运行结束不会自行删除每日配置。

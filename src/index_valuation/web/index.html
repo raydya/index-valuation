@@ -8,11 +8,12 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%23244bc5'/%3E%3Cpath d='M8 28L17 22L23 24L32 12M8 20L17 14L23 16L32 4' fill='none' stroke='white' stroke-width='2.5'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/app.js" defer></script>
+  <script src="/static/scheduled-tasks.js" defer></script>
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="/" aria-label="指数估值首页"><svg viewBox="0 0 36 36" aria-hidden="true"><rect width="36" height="36" rx="10"/><path d="M7 26l8-6 6 2 8-12M7 19l8-6 6 2 8-12"/></svg><span>指数估值</span></a>
-    <div class="top-actions"><label class="visually-hidden" for="index-select">选择指数</label><select id="index-select"><option value="">正在读取指数…</option></select><span class="local-tag">本地研究工作台</span></div>
+    <div class="top-actions"><a class="tasks-nav" href="#scheduled-tasks">定时任务</a><label class="visually-hidden" for="index-select">选择指数</label><select id="index-select"><option value="">正在读取指数…</option></select><span class="local-tag">本地研究工作台</span></div>
   </header>
   <main>
     <div id="error" role="alert" hidden><span id="error-text"></span><button id="retry" type="button">重新读取</button></div>
@@ -34,6 +35,15 @@
       <div id="chart-wrap" class="chart-wrap" aria-busy="true"><svg id="chart" viewBox="0 0 1000 420" role="img" tabindex="0" aria-label="指数点位及估值带，使用左右方向键查看逐日数值"><title>指数估值历史图</title></svg><div id="tooltip" class="tooltip" hidden></div><div id="loading" class="loading">正在读取指数估值…</div></div><div class="legend" id="legend"></div><p class="chart-caption" id="chart-caption">历史分位使用当日之前的正 PE，至少需要252个有效观测。</p></div>
       <aside class="band-pane"><div class="band-heading"><h3 id="band-heading">倍数对应点位</h3><span id="band-date">—</span></div><table class="band-table"><thead><tr><th id="band-first-column">PE</th><th>参考点位</th><th>距收盘</th></tr></thead><tbody id="band-rows"></tbody></table><div class="band-equation"><span>计算方式</span><p id="band-equation">隐含 EPS × PE 倍数</p></div><p class="band-footnote" id="band-footnote">参考点位是指定倍数下的换算结果。</p></aside></div>
       <div class="method-bar"><span class="method-icon">i</span><p id="quality-note">采用富途指数 PE，隐含 EPS 的盈利期间跟随 PE。<a href="#method-details">查看口径与核验</a></p></div>
+    </section>
+    <section id="scheduled-tasks" class="tasks-section" aria-labelledby="scheduled-tasks-title" aria-busy="true">
+      <div class="section-heading tasks-heading"><div><h2 id="scheduled-tasks-title">投资定时任务</h2><p>当前运行状态，与上方估值回看日期无关。时间均为北京时间。</p></div><button type="button" id="tasks-refresh" disabled>正在读取…</button></div>
+      <div class="tasks-status-strip"><p id="tasks-overview" aria-live="polite">正在读取任务计划与执行结果…</p><span id="tasks-checked-at">尚未读取</span></div>
+      <div id="tasks-error" class="tasks-notice tasks-notice-error" role="alert" hidden></div>
+      <div id="tasks-warnings" class="tasks-notice" hidden></div>
+      <div class="tasks-column-headings" aria-hidden="true"><span>任务 / 最近摘要</span><span>每日计划 / 调度</span><span>最近执行</span><span>下次计划</span><span></span></div>
+      <div id="tasks-list"><p class="tasks-empty">正在读取任务记录…</p></div>
+      <p class="tasks-footnote">页面可见时每分钟刷新状态；“刷新状态”只读取记录，不会执行任务。下次计划不代表实际开始时间。</p>
     </section>
     <section id="panic-live-section" class="panic-section" aria-labelledby="panic-live-title" hidden>
       <div class="section-heading"><div><h2 id="panic-live-title">滚动恐慌估值线</h2><p id="panic-live-stamp"></p></div><span id="panic-live-status" class="panic-status"></span></div>

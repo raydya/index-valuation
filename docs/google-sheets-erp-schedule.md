@@ -34,7 +34,11 @@ launchctl print "gui/$(id -u)/cn.index-valuation.erp-sheet"
 
 调度器只调用 `codex queue`，不操作表格或创建新会话，也不改变 Codex 的沙箱或审批设置。
 成功排队不代表表格更新成功：排队回执保存在 `data/scheduler/erp-sheet/last-queued.json`，
-状态仅为 `queued`；执行与回读结果在原 Codex 会话中查看。两级结果应分别核对。
+状态仅为 `queued`；执行与回读结果在原 Codex 会话中查看。任务按[执行指令](erp-sheet-update-task.md)通过
+`scripts/record_erp_result.py` 将结果保存到 `data/scheduler/erp-sheet/results/YYYY-MM-DD.json`，
+供[估值页面](http://127.0.0.1:8000/#scheduled-tasks)展示。回执必须匹配本次提交的日期、会话与排队时间；
+成功/部分完成必须已回读验证。没有匹配结果时仍显示排队待确认，不能据退出码0判断表格已更新。
+提交过程和失败另外记录到 `last-attempt.json`，与成功排队回执分开。两级结果应分别核对。
 同一北京时间日期、同一会话成功提交后不会再次提交；提交失败不写成功记录，超时须先检查
 会话是否已收到任务再决定是否重试。自动触发每日一次，不循环重试。
 

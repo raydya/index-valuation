@@ -19,6 +19,12 @@ https://docs.google.com/spreadsheets/d/17B0OcBwSrwkBrcM8BlEDNfbtNeL2ZsXpGX_HDr5b
 简短向用户报告连接器验证结果；若失败，明确说明原因。"""
 
 
+def save_attempt(path, record):
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
+    temporary.replace(path)
+
+
 def queue_update(root: Path, codex: Path, thread: str, *, probe: bool = False) -> int:
     now = datetime.now(ZONE)
     state_dir = root / "data/scheduler/erp-sheet"
@@ -38,30 +44,69 @@ def queue_update(root: Path, codex: Path, thread: str, *, probe: bool = False) -
                     "Today's ERP task is already queued; sheet completion is in Codex.", flush=True
                 )
                 return 0
+        identity = {"date": now.date().isoformat(), "queued_at": now.isoformat(), "thread": thread}
         message = (
             PROBE
             if probe
             else (
-                f"执行时间：{now.isoformat()}。这是用户已授权的每日表格更新。\n\n"
+                f"提交时间：{now.isoformat()}。这是用户已授权的每日表格更新。\n"
+                f"本次结果回执标识（原样保留）：{json.dumps(identity, ensure_ascii=False)}\n\n"
                 + (root / "docs/erp-sheet-update-task.md").read_text()
             )
         )
         command = [str(codex), "queue", "--thread", thread, "--message", message]
         print(f"{now.isoformat()} submitting ERP {'probe' if probe else 'update'}", flush=True)
+        attempt_path = state_dir / "last-attempt.json"
+        attempt = {
+            **identity,
+            "status": "running",
+            "started_at": now.isoformat(),
+            "finished_at": None,
+            "exit_code": None,
+            "summary": "正在提交表格更新任务。",
+        }
+        if not probe:
+            save_attempt(attempt_path, attempt)
         try:
             result = subprocess.run(
                 command, cwd=root, capture_output=True, text=True, timeout=60, check=False
             )
         except subprocess.TimeoutExpired:
+            if not probe:
+                attempt.update(
+                    status="timed_out",
+                    finished_at=datetime.now(ZONE).isoformat(),
+                    exit_code=124,
+                    summary="提交回执超时，是否已排队未知；请先核对会话，避免重复写表。",
+                )
+                save_attempt(attempt_path, attempt)
             print(
                 "Queue receipt timed out; submission status unknown. Check Codex before retrying."
             )
             return 124
+        except OSError:
+            if not probe:
+                attempt.update(
+                    status="failed",
+                    finished_at=datetime.now(ZONE).isoformat(),
+                    exit_code=1,
+                    summary="无法启动表格任务提交程序，请检查 Codex 运行环境。",
+                )
+                save_attempt(attempt_path, attempt)
+            return 1
         if result.stdout:
             print(result.stdout, end="" if result.stdout.endswith("\n") else "\n", flush=True)
         if result.stderr:
             print(result.stderr, end="" if result.stderr.endswith("\n") else "\n", flush=True)
         if result.returncode:
+            if not probe:
+                attempt.update(
+                    status="failed",
+                    finished_at=datetime.now(ZONE).isoformat(),
+                    exit_code=result.returncode,
+                    summary="表格任务提交失败，未记录成功排队。",
+                )
+                save_attempt(attempt_path, attempt)
             print(f"Queue failed with exit {result.returncode}; no successful receipt recorded.")
             return result.returncode
         if not probe:
@@ -80,6 +125,13 @@ def queue_update(root: Path, codex: Path, thread: str, *, probe: bool = False) -
                 + "\n"
             )
             temporary.replace(state_path)
+            attempt.update(
+                status="queued",
+                finished_at=datetime.now(ZONE).isoformat(),
+                exit_code=0,
+                summary="已排队，等待执行结果；排队成功不代表表格更新完成。",
+            )
+            save_attempt(attempt_path, attempt)
         print("Queued only; Google Drive readback and the result will appear in the Codex session.")
         return 0
 

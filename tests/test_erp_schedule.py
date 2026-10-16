@@ -20,6 +20,7 @@ def load_script(name):
 
 installer = load_script("install_erp_schedule")
 runner = load_script("run_erp_sync")
+recorder = load_script("record_erp_result")
 
 
 def prepare(root):
@@ -60,6 +61,9 @@ def test_queue_is_shell_free_deduplicates_only_receipts_and_probe_does_not_block
     assert command[5].endswith("Google Drive only\n`literal` $(literal)")
     assert not kwargs.get("shell") and kwargs["timeout"] == 60
     assert json.loads(state.read_text())["status"] == "queued"
+    attempt = json.loads((state.parent / "last-attempt.json").read_text())
+    assert attempt["status"] == "queued" and attempt["exit_code"] == 0
+    assert attempt["queued_at"] == json.loads(state.read_text())["queued_at"]
 
 
 @pytest.mark.parametrize("failure", [3, "timeout"])
@@ -75,6 +79,60 @@ def test_failed_or_ambiguous_submission_is_not_marked_queued(tmp_path, monkeypat
     expected = 124 if failure == "timeout" else failure
     assert runner.queue_update(tmp_path, Path("/bin/codex"), THREAD) == expected
     assert not (tmp_path / "data/scheduler/erp-sheet/last-queued.json").exists()
+    attempt = json.loads((tmp_path / "data/scheduler/erp-sheet/last-attempt.json").read_text())
+    assert attempt["status"] == ("timed_out" if failure == "timeout" else "failed")
+
+
+def erp_result(root):
+    folder = root / "data/scheduler/erp-sheet"
+    folder.mkdir(parents=True)
+    identity = {
+        "date": "2026-10-16",
+        "thread": THREAD,
+        "queued_at": "2026-10-16T08:12:00+08:00",
+    }
+    (folder / "last-queued.json").write_text(json.dumps(identity))
+    return {
+        **identity,
+        "status": "partial",
+        "started_at": "2026-10-16T14:19:00+08:00",
+        "finished_at": "2026-10-16T14:29:00+08:00",
+        "summary": "已更新并回读，恒生科技口径未核实。",
+        "readback_verified": True,
+        "issues": ["恒生科技日期未知"],
+        "data_items": [{"name": "恒生科技", "date": None, "status": "unknown"}],
+        "result_text": "完整结果",
+    }
+
+
+def test_result_is_bound_to_queue_and_preserves_unknown_data_date(tmp_path):
+    payload = erp_result(tmp_path)
+    path = recorder.save_result(tmp_path, payload)
+    record = json.loads(path.read_text())
+    assert record["data_items"][0]["date"] is None
+    assert record["status"] == "partial" and record["readback_verified"]
+    assert record["started_at"] == payload["started_at"]
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"queued_at": "2026-10-16T08:13:00+08:00"},
+        {"thread": "another-thread"},
+        {"date": "../../other"},
+        {"status": "completed"},
+        {"readback_verified": False},
+        {"finished_at": "2026-10-16T14:18:00+08:00"},
+        {"started_at": "2026-10-16T14:19:00"},
+        {"status": "completed", "issues": []},
+        {"status": "completed", "issues": [], "data_items": []},
+    ],
+)
+def test_result_rejects_wrong_task_unverified_success_or_invalid_times(tmp_path, changes):
+    payload = erp_result(tmp_path)
+    with pytest.raises(ValueError):
+        recorder.save_result(tmp_path, {**payload, **changes})
+    assert not (tmp_path / "data/scheduler/erp-sheet/results").exists()
 
 
 def test_installer_does_not_replace_an_unrelated_job(tmp_path, monkeypatch):

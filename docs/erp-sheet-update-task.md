@@ -26,3 +26,13 @@ https://docs.google.com/spreadsheets/d/17B0OcBwSrwkBrcM8BlEDNfbtNeL2ZsXpGX_HDr5b
 数据尚未发布、周末无新值、权限拒绝或来源失败时，保留已有输入和真实数据日期，注明原因，不伪造今天的数据，不以价格涨跌推算PE，不把旧值标成新值。对来源的盈利期、加权和亏损处理不作超出证据的统一口径承诺。原表不同市场或指标日期可以不同，但必须透明标注。
 
 使用精确十进制核对PE倒数和利差，批量写入后重新读取，验证C=1/B、E正确引用对应国债、F=C-E，无公式错误；确认未改变其他输入、公式和格式。向用户报告本次实际修改的项目、各项数据日期、未变化项及未核验/失败项，并提供原表链接。只在成功回读后报告更新完成；若连接器不可用或写入失败，明确报告未更新。
+
+执行结束后，另存一份本地结果供估值系统的“定时任务”页面展示；这是结果记录，不修改代码或调度。读取本条任务开头的“本次结果回执标识”，原样保留其中的 `date`、`queued_at`、`thread`，不得取另一次任务的标识。将以下字段写入项目 `data/scheduler/erp-sheet/result-input.json`，然后执行 `.venv/bin/python scripts/record_erp_result.py --input data/scheduler/erp-sheet/result-input.json`：
+
+- `date`、`queued_at`、`thread`：本次排队标识；`started_at`、`finished_at`：实际开始及完成时间，ISO 格式并含时区。
+- `status`：全部目标已核验为 `completed`；存在未更新或未核验项为 `partial`；无法读取、写入或回读验证为 `failed`。不能仅凭排队成功填 completed。
+- `readback_verified`：布尔值，只有真实回读验证完成才为 true；completed 和 partial 必须为 true。
+- `summary`：一句结果摘要；`issues`：未更新、未核验或失败原因的字符串列表；`result_text`：本次最终报告正文。
+- `data_items`：各目标的列表，每项包含 `name`、`date`（真实数据日期，未知为 null）、`complete_date`（已核验日期，未知为 null）、`status`（available / partial / unknown）、`note`（口径及限制）。QQQ 的数据集日期不得写成已核实的收盘估值日；恒生科技未知日期保持 null。
+
+记录脚本只接受与当前排队记录匹配的结果，并写入 `data/scheduler/erp-sheet/results/YYYY-MM-DD.json`。记录失败时在最终回复中明确说明，不能将页面仍显示排队解释为表格尚未修改。不要在结果文件中保存凭据、完整工具日志或与任务无关的会话内容。

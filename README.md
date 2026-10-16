@@ -185,6 +185,8 @@ uv run index-valuation calculate --index csi300 --date 2026-10-12 --historical-f
 
 ## 每日自动更新
 
+网页的[定时任务](http://127.0.0.1:8000/#scheduled-tasks)集中展示5项投资任务：计划时间、是否启用、下次计划、最近执行、数据日期和缺口。可展开查看执行结果原文；页面每分钟刷新状态，也可手动点击“刷新状态”。状态读取不会启动采集或写入表格。接口为 `/api/scheduled-tasks`，排队、执行结束和已回读验证分别展示，规则见[定时任务页面说明](docs/scheduled-tasks-dashboard.md)。
+
 macOS 安装用户级任务：
 
 ```bash
