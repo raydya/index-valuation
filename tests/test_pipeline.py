@@ -1016,3 +1016,189 @@ def test_rest_numeric_json_responses_survive_real_collection_and_jsonb_storage(
     assert report["latest"]["implied_eps"] == Decimal(str(close_value)) / Decimal(
         str(metric_values[1])
     )
+
+
+def seed_total_return_valuation(repository):
+    """Three real session dates over three years, with independent price/PE inputs."""
+    from index_valuation.domain import TotalReturnSpec
+
+    days = (date(2023, 10, 12), date(2024, 10, 11), DAY)
+    mapping = TotalReturnSpec(
+        code="H00922",
+        name="Test gross dividend reinvestment index",
+        source="csindex",
+        symbol="H00922",
+        history_start_date=days[0],
+        identity_url="https://example.test/official-total-return",
+    )
+    spec = replace(SPEC, total_return=mapping, band_min_observations=2)
+    repository.ensure_index(spec)
+    run = repository.start_run(spec, DAY)
+    prices = [
+        Observation(spec.quote_code, day, source, Decimal(price), None, None, NOW, NOW)
+        for day, price in zip(days, (1000, 1100, 1210), strict=True)
+        for source in ("futu", "eastmoney")
+    ]
+    pe = [
+        SourceValuation(
+            "futu", spec.quote_code, day, "pe", "futu_valuation_pe", Decimal(20), NOW, "pe.json"
+        )
+        for day in days
+    ]
+    repository.save_observations(run, prices)
+    repository.save_source_valuations(run, pe)
+    returns = [
+        Observation(
+            "CSI.H00922",
+            day,
+            "csindex",
+            Decimal(value),
+            None,
+            None,
+            NOW,
+            NOW,
+            price_basis="gross_total_return",
+            eps_method="not_applicable",
+            artifact_path="total-return.json",
+        )
+        for day, value in zip(days, (1000, 1150, 1500), strict=True)
+    ]
+    return spec, run, days, returns
+
+
+def test_total_return_upserts_do_not_change_price_pe_or_valuation_series(repository, tmp_path):
+    from index_valuation.index_series import IndexSeries, method_for
+    from index_valuation.models import IndexSeriesRecord, TotalReturnObservation
+
+    spec, run, days, returns = seed_total_return_valuation(repository)
+    job = IndexSeries(repository, tmp_path)
+    job.refresh(spec)
+    valuation_before = repository.index_series(spec.key, method_for(spec))
+    inputs_before = repository.index_inputs(spec)
+    repository.save_total_return_observations(spec, run, "csindex", "H00922", returns)
+    repository.save_total_return_observations(spec, run, "csindex", "H00922", returns)
+    assert count(repository, TotalReturnObservation) == 3
+
+    # A supplier correction updates the same identity/date without adding rows.
+    second_run = repository.start_run(spec, DAY)
+    corrected = replace(returns[-1], price=Decimal("1550.12345678"), artifact_path="revised.json")
+    repository.save_total_return_observations(spec, second_run, "csindex", "H00922", [corrected])
+    stored = repository.total_return_observations(spec)
+    assert len(stored) == 3 and stored[-1]["trade_date"] == days[-1]
+    assert stored[-1]["price"] == Decimal("1550.12345678")
+    assert stored[-1]["run_id"] == second_run and stored[-1]["artifact_path"] == "revised.json"
+    assert stored[-1]["raw"]["identity_url"] == spec.total_return.identity_url
+    report = job.refresh(spec)
+    assert count(repository, TotalReturnObservation) == 3
+    assert count(repository, DailyObservation) == 6
+    assert count(repository, SourceValuationRecord) == 3
+    assert count(repository, IndexSeriesRecord) == 3
+    assert repository.index_inputs(spec) == inputs_before
+    valuation_after = repository.index_series(spec.key, method_for(spec))
+    for before, after in zip(valuation_before, valuation_after, strict=True):
+        assert {k: v for k, v in before.items() if k != "calculated_at"} == {
+            k: v for k, v in after.items() if k != "calculated_at"
+        }
+    assert report["latest"]["price"] == 1210
+    assert report["latest"]["pe"] == 20
+    assert report["latest"]["implied_eps"] == Decimal("60.5")
+    assert report["latest"]["fixed"]["8"] == 484
+    assert report["total_return"]["end_price"] == Decimal("1550.12345678")
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"source": "other_official"},
+        {"symbol": "DIFFERENT_VENDOR_ID"},
+        {"code": "DIFFERENT_INDEX"},
+        {"basis": "net_total_return"},
+    ],
+)
+def test_total_return_identity_changes_do_not_mix_old_records(repository, changes):
+    from index_valuation.models import TotalReturnObservation
+
+    spec, run, _, returns = seed_total_return_valuation(repository)
+    repository.save_total_return_observations(spec, run, "csindex", "H00922", returns)
+    changed = replace(spec, total_return=replace(spec.total_return, **changes))
+    assert repository.total_return_observations(changed) == []
+    assert repository.total_return_points(changed) == []
+    new_row = replace(returns[-1], source=changed.total_return.source, price=Decimal(2000))
+    repository.save_total_return_observations(
+        changed, run, changed.total_return.source, changed.total_return.symbol, [new_row]
+    )
+    assert count(repository, TotalReturnObservation) == 4
+    assert [row["price"] for row in repository.total_return_points(changed)] == [Decimal(2000)]
+    assert [row["price"] for row in repository.total_return_points(spec)] == [
+        Decimal(1000),
+        Decimal(1150),
+        Decimal(1500),
+    ]
+
+
+def test_total_return_refresh_api_csv_and_historical_asof_agree(repository, tmp_path):
+    import csv
+    from io import StringIO
+    from pathlib import Path
+
+    from fastapi.testclient import TestClient
+
+    from index_valuation.index_series import IndexSeries
+    from index_valuation.webapp import create_app
+
+    spec, run, days, returns = seed_total_return_valuation(repository)
+    repository.save_total_return_observations(spec, run, "csindex", "H00922", returns)
+    report = IndexSeries(repository, tmp_path).refresh(spec)
+    saved_rows = list(csv.DictReader(StringIO(Path(report["csv"]).read_text().lstrip("\ufeff"))))
+
+    with TestClient(create_app(repository=repository, specs={spec.key: spec})) as client:
+        for cutoff, expected_rows, last_value in ((DAY, 3, 1500), (days[1], 2, 1150)):
+            params = {"as_of": str(cutoff), "chart_years": 0}
+            response = client.get(f"/api/indices/{spec.key}/dashboard", params=params)
+            assert response.status_code == 200
+            data = response.json()
+            performance = data["total_return"]
+            assert performance["status"] == "ok"
+            assert performance["basis"] == "gross_total_return"
+            assert performance["start_date"] == str(days[0])
+            assert performance["end_date"] == str(cutoff)
+            assert performance["latest_available_date"] == str(cutoff)
+            assert performance["observation_count"] == expected_rows
+            assert performance["aligned_with_price_return"]
+            assert Decimal(performance["start_price"]) == 1000
+            assert Decimal(performance["end_price"]) == last_value
+            assert Decimal(performance["period_return_pct"]) == Decimal(last_value) / 10 - 100
+            assert performance["price_status"] == "unverified"
+            assert Decimal(performance["annualized_return_pct"]) > Decimal(
+                data["price_return"]["annualized_return_pct"]
+            )
+            if cutoff == DAY:
+                assert (
+                    Decimal(performance["annualized_return_pct"])
+                    == report["total_return"]["annualized_return_pct"]
+                )
+            csv_response = client.get(f"/api/indices/{spec.key}/export.csv", params=params)
+            assert csv_response.status_code == 200
+            csv_rows = list(csv.DictReader(StringIO(csv_response.text.lstrip("\ufeff"))))
+            assert len(csv_rows) == len(data["series"]) == expected_rows
+            for row, point in zip(csv_rows, data["series"], strict=True):
+                assert row["trade_date"] == point["trade_date"] <= str(cutoff)
+                assert Decimal(row["total_return_level"]) == Decimal(point["total_return_level"])
+                assert row["total_return_source"] == point["total_return_source"] == "csindex"
+                assert row["total_return_code"] == point["total_return_code"] == "H00922"
+                assert row["total_return_basis"] == "gross_total_return"
+                assert row["total_return_status"] == "unverified"
+                assert Decimal(row["pe"]) == 20
+                assert Decimal(row["price"]) == Decimal(point["price"])
+                assert Decimal(row["implied_eps"]) == Decimal(row["price"]) / 20
+                saved = next(x for x in saved_rows if x["trade_date"] == row["trade_date"])
+                for field in ("price", "pe", "implied_eps", "band_8x", "total_return_level"):
+                    assert Decimal(row[field]) == Decimal(saved[field])
+                for field in (
+                    "trade_date",
+                    "total_return_source",
+                    "total_return_code",
+                    "total_return_basis",
+                    "total_return_status",
+                ):
+                    assert row[field] == saved[field]

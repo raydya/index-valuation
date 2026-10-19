@@ -25,6 +25,21 @@ def decimal_or_none(value: object) -> Decimal | None:
 
 
 @dataclass(frozen=True)
+class TotalReturnSpec:
+    """An explicitly identified dividend-reinvestment index, separate from valuation."""
+
+    code: str
+    name: str
+    source: str
+    symbol: str
+    history_start_date: date
+    identity_url: str
+    basis: str = "gross_total_return"
+    verification_source: str | None = None
+    verification_symbol: str | None = None
+
+
+@dataclass(frozen=True)
 class IndexSpec:
     key: str
     name: str
@@ -67,6 +82,8 @@ class IndexSpec:
     collection_disabled_reason: str = ""
     valuation_source: str = "futu"
     danjuan_symbol: str | None = None
+    total_return: TotalReturnSpec | None = None
+    total_return_unavailable_reason: str = "尚未接入已核实的全收益指数历史"
 
     @property
     def market(self) -> str:

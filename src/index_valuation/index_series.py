@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from index_valuation.archive import json_text
 from index_valuation.domain import DataError
-from index_valuation.performance import price_return_summary
+from index_valuation.performance import price_return_summary, total_return_summary
 from index_valuation.providers.yahoo_etf_valuation import METRIC as ETF_PE_METRIC
 from index_valuation.providers.yahoo_etf_valuation import basis_for as etf_pe_basis
 from index_valuation.quality import compare_value
@@ -363,7 +363,9 @@ def years_before(day, years):
         return day.replace(year=day.year - years, day=28)
 
 
-def build_dashboard(spec, points, *, as_of=None, chart_years=5, history_years=5):
+def build_dashboard(
+    spec, points, *, as_of=None, chart_years=5, history_years=5, total_return_points=None
+):
     """Use only dates strictly before each point for historical PE statistics."""
     if chart_years not in {0, 1, 3, 5, 10} or history_years not in {0, 3, 5, 10}:
         raise DataError("Unsupported history window")
@@ -379,6 +381,10 @@ def build_dashboard(spec, points, *, as_of=None, chart_years=5, history_years=5)
         (p["trade_date"] for p in eligible if p["pe"] is not None and p["pe"] > 0), None
     )
     chart_start = years_before(selected["trade_date"], chart_years)
+    return_points = total_return_points or []
+    return_by_date = (
+        {row["trade_date"]: row for row in return_points} if spec.collection_enabled else {}
+    )
     history, queue, series = [], deque(), []
     weekly = valuation_profile(spec)["history_frequency"] == "weekly"
     pending_week = None
@@ -463,6 +469,11 @@ def build_dashboard(spec, points, *, as_of=None, chart_years=5, history_years=5)
                         )
                     },
                     **bands,
+                    "total_return_level": return_by_date.get(day, {}).get("price"),
+                    "total_return_source": return_by_date.get(day, {}).get("price_source"),
+                    "total_return_code": spec.total_return.code if spec.total_return else None,
+                    "total_return_basis": spec.total_return.basis if spec.total_return else None,
+                    "total_return_status": return_by_date.get(day, {}).get("price_status"),
                 }
             )
         latest_bands = bands
@@ -473,6 +484,10 @@ def build_dashboard(spec, points, *, as_of=None, chart_years=5, history_years=5)
                 insort(history, pe)
                 queue.append((day, pe))
                 history_total += pe
+    price_summary = price_return_summary(eligible, chart_start, selected["trade_date"])
+    # The total-return reader may have a longer archive than the price chart.
+    # "All history" still means the visible price range, not unseen TR history.
+    return_start = max(chart_start, price_summary["start_date"] or series[0]["trade_date"])
     return {
         "index": {
             "key": spec.key,
@@ -501,7 +516,10 @@ def build_dashboard(spec, points, *, as_of=None, chart_years=5, history_years=5)
             (p["trade_date"] for p in reversed(points) if p["implied_eps"] is not None), None
         ),
         "chart_years": chart_years,
-        "price_return": price_return_summary(eligible, chart_start, selected["trade_date"]),
+        "price_return": price_summary,
+        "total_return": total_return_summary(
+            spec, return_points, return_start, selected["trade_date"], price_summary
+        ),
         "history_years": history_years,
         "minimum_history": spec.band_min_observations,
         "selected": {**selected, **latest_bands},
@@ -570,6 +588,11 @@ def series_csv(dashboard):
         "pe_usable",
         "pe_relative_error",
         "phase",
+        "total_return_level",
+        "total_return_source",
+        "total_return_code",
+        "total_return_basis",
+        "total_return_status",
     ]
     multiples = sorted(map(str, dashboard["index"]["band_multiples"]), key=Decimal)
     fields += [f"band_{m}x" for m in multiples]
@@ -618,7 +641,14 @@ class IndexSeries:
             run_id = self.repository.start_run(spec, points[-1]["trade_date"])
             try:
                 self.repository.save_index_series(spec, method_for(spec), run_id, points)
-                dashboard = build_dashboard(spec, points, chart_years=0)
+                dashboard = build_dashboard(
+                    spec,
+                    points,
+                    chart_years=0,
+                    total_return_points=self.repository.total_return_points(spec)
+                    if spec.total_return
+                    else [],
+                )
                 self.output_dir.mkdir(parents=True, exist_ok=True)
                 # Preserve previous exports when activating a different US PE basis.
                 suffix = (
@@ -649,6 +679,7 @@ class IndexSeries:
                     "panic_line": dashboard["panic_line"],
                     "greed_line": dashboard["greed_line"],
                     "valuation_signal": dashboard["valuation_signal"],
+                    "total_return": dashboard["total_return"],
                     "csv": str(path),
                 }
                 report_path = self.output_dir / f"{spec.key}-index-series-{run_id}.json"

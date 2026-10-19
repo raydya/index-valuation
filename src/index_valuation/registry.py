@@ -7,7 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from index_valuation.domain import DataError, IndexSpec
+from index_valuation.domain import DataError, IndexSpec, TotalReturnSpec
 
 
 def load_indices(path: Path = Path("indices.toml")) -> dict[str, IndexSpec]:
@@ -27,7 +27,68 @@ def load_indices(path: Path = Path("indices.toml")) -> dict[str, IndexSpec]:
         for field in ("inception_date", "history_start_date"):
             if isinstance(values.get(field), str):
                 values[field] = date.fromisoformat(values[field])
+        if "total_return" in values:
+            total_return = dict(values["total_return"])
+            if isinstance(total_return.get("history_start_date"), str):
+                total_return["history_start_date"] = date.fromisoformat(
+                    total_return["history_start_date"]
+                )
+            values["total_return"] = TotalReturnSpec(**total_return)
         spec = IndexSpec(key=key, **values)
+        if spec.total_return:
+            tr = spec.total_return
+            if (
+                not re.fullmatch(r"[A-Za-z0-9]+", tr.code)
+                or not tr.name.strip()
+                or tr.basis != "gross_total_return"
+                or type(tr.history_start_date) is not date
+                or not tr.identity_url.startswith("https://")
+                or bool(tr.verification_source) != bool(tr.verification_symbol)
+                or tr.source == tr.verification_source
+            ):
+                raise DataError("Total return requires a documented gross-return identity")
+            allowed_return_sources = {
+                "CN": {"csindex", "cnindex", "futu", "eastmoney"},
+                "HK": {"futu", "eastmoney", "hsi"},
+                "US": {"nasdaq", "futu"},
+            }[spec.market]
+            if any(
+                source not in allowed_return_sources
+                for source in (tr.source, tr.verification_source)
+                if source is not None
+            ):
+                raise DataError("Total return source is not supported for this market")
+            for source, symbol in (
+                (tr.source, tr.symbol),
+                (tr.verification_source, tr.verification_symbol),
+            ):
+                if source is None:
+                    continue
+                pattern = (
+                    r"(?:SH|SZ|HK|US)\.[A-Za-z0-9.]+"
+                    if source == "futu"
+                    else r"[0-9]+\.[A-Za-z0-9]+"
+                    if source == "eastmoney"
+                    else r"[0-9]+\.[0-9]+"
+                    if source == "hsi"
+                    else r"[A-Za-z0-9]+"
+                )
+                if not re.fullmatch(pattern, symbol):
+                    raise DataError("Invalid total-return provider symbol")
+                if (
+                    source == "futu"
+                    and symbol.split(".", 1)[0]
+                    not in {"CN": {"SH", "SZ"}, "HK": {"HK"}, "US": {"US"}}[spec.market]
+                ):
+                    raise DataError("Total-return symbol must match the index market")
+                if symbol in {spec.quote_code, spec.provider_code, spec.eastmoney_secid}:
+                    raise DataError("A price instrument cannot be used as a total-return source")
+                if source in {"csindex", "cnindex", "nasdaq"} and symbol != tr.code:
+                    raise DataError("Total-return provider code must match its canonical identity")
+                if source == "eastmoney" and symbol.split(".", 1)[1] != tr.code:
+                    raise DataError("Total-return price supplement must match its canonical code")
+            if tr.code == spec.provider_code:
+                raise DataError("A price index cannot also be its total-return index")
         if spec.historical_price_source not in {"futu", "eastmoney", "none"}:
             raise DataError("Unsupported historical_price_source")
         if spec.inception_date is not None and type(spec.inception_date) is not date:

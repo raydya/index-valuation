@@ -14,6 +14,7 @@
 - 环境和启动命令见 [README.md](README.md)，依赖以 [pyproject.toml](pyproject.toml) 和 `uv.lock` 为准。命令在项目根目录运行，使用项目 `.venv` 或 `uv run --locked`；首次配置按 README 执行 `make setup`，已有环境不重复初始化。
 - 新增指数、调整来源、PE 口径或增量逻辑前，阅读 [直接指数估值说明](docs/direct-index-valuation.md)。处理海外指数、ETF 基准映射、稀疏 PE 或美股接口限制时，再阅读 [美股接入记录](docs/us-indices-2026-10-13.md)；历史报告中的权限、覆盖率和数值需以本次核验为准。
 - 指数差异放在 [indices.toml](indices.toml)，来源差异放在 [providers](src/index_valuation/providers)。同源指数复用适配器，计算和网页复用通用实现，不复制一套按指数名称分支的流程。
+- 分红再投资年化使用独立的全收益映射 `[indices.<key>.total_return]`，先核实税前全收益身份、代码、来源、起点及官方出处；不支持时设置明确原因。采集使用 `TotalReturnCollector` 和通用来源工厂，数据存入 `total_return_observations`，不得把全收益点位写进价格/PE输入。新增映射后用 `backfill-returns --index <key>` 完成独立历史回填及导出，验证真实覆盖和来源；规则见[年化收益说明](docs/direct-index-valuation.md#年化收益)。
 - 配置结构和校验分别在 [domain.py](src/index_valuation/domain.py)、[registry.py](src/index_valuation/registry.py)；来源工厂在 [cli.py](src/index_valuation/cli.py)，采集编排在 [history.py](src/index_valuation/history.py)，派生与统计在 [index_series.py](src/index_valuation/index_series.py)。新增数据源时需检查这些接入点，不能只增加一个 TOML 源名称。
 - 内地、香港指数继续以富途为主。用户已授权历史价格补源，以及美股使用其他 PE 主源并单独标注口径、交叉核验；在该范围内继续实施，无需重复询问已获授权的事项。缺少权限、供应商明确不支持和临时请求失败要分别记录。
 - 标普500、纳斯达克100按用户指定改用富途 REST 的指数点位和指数 PE，显式配置 `futorest_symbol`、`valuation_source = "futorest"`，采用独立方法 `futorest_index_implied_daily_v1`。FRED 分发的标普官方点位、Nasdaq 官方点位仅作价格核验；不再请求 Yahoo 或采用其旧记录参与新方法，也不恢复东方财富、雪球、Multpl、GuruFocus。接入与实际覆盖见 [REST 接入记录](docs/futu-rest-integration-2026-10-16.md)。内地、香港仍使用 OpenD。
@@ -47,6 +48,8 @@ uv run --locked index-valuation status --index "$index_key"
 2. **确定范围并运行。** 全部指数使用 `update-index --all`，按市场使用 `update-index --market CN HK` 或 `--market US`，指定指数使用 `--index`。CLI 根据每个指数自身的时区及 `close_time` 确定截至日期，再用对应市场日历过滤交易日；不得用北京时间当天或简单工作日替代海外交易日。
 3. **保留重叠窗口。** 常规增量从当前方法最后已存日期回退14个自然日，最低不早于配置起点；这是从最后已存日期回退，不是仅取“今天往前14天”，因此停机后的缺口也能补采。当前方法尚无结果时走完整起点；支持富途但一直没有 PE 的指数也保留完整回填起点，以便权限恢复后补齐。已知不支持富途的价格专用指数正常增量。
 4. **采集、核验、重建。** 复用命令内部的任务锁、原始响应归档、来源分开存储和 upsert。`update-index` 自动重建该指数已入库的派生序列、滚动恐慌线及导出，无需再手工插入 EPS 或重复调用 `build-index`。所有指数复用 `panic_lines.py`，不手填阈值；历史修订也重算受影响日期的线。周末或源暂未更新时保持真实数据日期。
+
+   已配置全收益映射的指数也会自动更新分红再投资数据，无需新调度。全收益的每个来源按自己的最后已存日期回退14天，未采集过则从独立全收益起点回填，不沿用价格/PE进度。检查报告的 `total_return_collection`；某源失败保留其他来源和旧数据，不能以价格、净收益、ETF或股息率估算补齐。更早修订使用 `backfill-returns --start ... --end ...`。
 5. **检查结果而非只看退出码。** 阅读每个指数的报告，核对最新已收盘日、各源最后日期与行数、PE/EPS 覆盖、核验状态、隔离记录及 `latest_complete_date`。退出码0表示命令正常完成，仍要检查质量；2表示存在部分完成、阻塞或失败等需查看报告的状态，数据可能已经入库；1通常表示配置/执行异常，已完成指数可能仍已保存。`collected` 不表示财务口径已独立核实。
 6. **定位后补采。** 临时失败后重跑该指数的 `update-index`；超过增量窗口的旧数据修订使用带 `--start`、`--end` 的 `backfill-index` 或完整回填。仅修改派生逻辑、输入已经齐备时使用 `build-index`。切换 PE 主源、基准或采样方法时检查方法版本与历史边界，不能用当前口径覆盖另一方法，也不能仅靠14天增量补齐新方法历史。
 7. **核对发布结果。** 查看网页/API 与 CSV 的最新日期及值。正常增量不需重启网页；配置和后端代码变更需重启。若 `--all` 中途异常退出，核对每个配置 key 是否有本次运行记录，对未执行项逐一补跑。结束时报告已更新范围、剩余缺口和处理结果，不能把整个批次笼统称为成功。
@@ -66,6 +69,7 @@ uv run --locked index-valuation build-index --index "$index_key"
 
 ## 数据口径与质量边界
 
+- “价格年化”不含分红；“分红再投资年化”仅使用已确认的 `gross_total_return` 指数。两者跟随图表区间与历史日期，显示实际首末日期，禁止使用未来值、边界前填或当前股息率相加。全收益历史不足时显示实际范围及与价格年化的区间差异；不将短历史标作完整区间。来源、代码和口径变更必须隔离旧记录。全收益端点重大差异时留空，单源可算但标为未独立核验；不影响现有估值资格与 band。
 - 恐慌线采用独立版本 `rolling_pe_p10_v1`：所选日期之前5年、同一方法及来源口径的有效正 PE 的10%分位，排除当天、未来和发布前回溯记录；历史跨度满5年且达到配置样本门槛才设线。随 `IndexSeries.refresh` 保存到 `index_series.details.panic_line`，更新、回填、重建共用；图表区间和常规 band 的统计窗口不改变它。点位线为当日有效隐含 EPS × 当日阈值，不补缺失 EPS；暂停采集的指数不显示当前线。历史回看读取当日线，不能套用今天的阈值；旧研究的样本与后续收益保留为独立归档，不能当作新线的验证结果。详见 [恐慌线说明](docs/panic-reference.md)。
 - 隐含 EPS = **同日指数收盘点位 / 配置主源 PE**，单位为指数点；band = 隐含 EPS × PE 倍数。数值计算使用 `Decimal`。默认不以 ETF 价格、基金持仓 PE、预期 PE、CAPE 或全收益指数替代；用户已明确允许的 Yahoo ETF 代理使用独立方法、口径和页面标识，称“代理隐含 EPS”，不称为指数实际盈利或官方 PE。
 - 每条来源记录保存证券身份、日期、来源、口径、观测时间及原始响应路径。日历外或身份错误的响应隔离并报告；缺失 PE/价格保持为空，不能前向填充、移到相邻日期或把缺失当零。发布日期前的回溯数据与正式发布后的数据分别标记。
@@ -83,6 +87,7 @@ uv run --locked index-valuation build-index --index "$index_key"
 | 入口 | 用途 |
 | --- | --- |
 | `daily_observations` / `source_valuations` | 按来源保存的价格、估值输入 |
+| `total_return_observations` | 独立保存税前全收益点位及身份、来源、口径 |
 | `index_series` | 按指数、日期、方法保存的派生序列 |
 | `pipeline_runs`、`status --index` | 任务状态与报告；检查摘要指向的详细采集报告 |
 | `data/raw/` | 按内容哈希归档的来源响应 |

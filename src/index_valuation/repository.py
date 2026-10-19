@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import Engine
 
@@ -31,6 +31,7 @@ from index_valuation.models import (
     RunRecord,
     Security,
     SourceValuationRecord,
+    TotalReturnObservation,
     WeightMember,
     WeightRecord,
 )
@@ -265,6 +266,69 @@ class Repository:
                     values[offset : offset + 500],
                     ["source", "symbol", "trade_date"],
                 )
+
+    def save_total_return_observations(self, spec, run_id, source, symbol, rows):
+        tr = spec.total_return
+        if tr is None or (source, symbol) not in {
+            (tr.source, tr.symbol),
+            (tr.verification_source, tr.verification_symbol),
+        }:
+            raise DataError("Unconfigured total-return identity")
+        if any(row.source != source or row.currency != spec.currency for row in rows):
+            raise DataError("Total-return observations have the wrong source or currency")
+        values = [
+            {
+                "index_key": spec.key,
+                "index_code": tr.code,
+                "source": source,
+                "symbol": symbol,
+                "basis": tr.basis,
+                "trade_date": row.trade_date,
+                "price": row.price,
+                "currency": row.currency,
+                "quote_at": row.quote_at,
+                "observed_at": row.observed_at,
+                "artifact_path": row.artifact_path,
+                "raw": {**row.raw, "identity_url": tr.identity_url},
+                "run_id": run_id,
+            }
+            for row in rows
+        ]
+        with self.engine.begin() as connection:
+            for offset in range(0, len(values), 500):
+                _upsert(
+                    connection,
+                    TotalReturnObservation,
+                    values[offset : offset + 500],
+                    ["index_key", "index_code", "source", "symbol", "basis", "trade_date"],
+                )
+
+    def total_return_observations(self, spec):
+        tr = spec.total_return
+        if tr is None:
+            return []
+        pairs = [(tr.source, tr.symbol)]
+        if tr.verification_source:
+            pairs.append((tr.verification_source, tr.verification_symbol))
+        model = TotalReturnObservation
+        with self.engine.connect() as connection:
+            return list(
+                connection.execute(
+                    select(model.__table__)
+                    .where(
+                        model.index_key == spec.key,
+                        model.index_code == tr.code,
+                        model.basis == tr.basis,
+                        or_(*(and_(model.source == s, model.symbol == c) for s, c in pairs)),
+                    )
+                    .order_by(model.trade_date, model.source)
+                ).mappings()
+            )
+
+    def total_return_points(self, spec):
+        from index_valuation.total_returns import select_return_points
+
+        return select_return_points(spec, self.total_return_observations(spec))
 
     def save_source_valuations(self, run_id: UUID, rows) -> None:
         values = [{**asdict(row), "run_id": run_id} for row in rows]

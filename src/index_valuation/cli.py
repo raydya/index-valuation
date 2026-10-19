@@ -35,11 +35,13 @@ from index_valuation.providers.google_history import GoogleHistory
 from index_valuation.providers.gurufocus_valuation import GuruFocusValuation
 from index_valuation.providers.multpl_valuation import MultplValuation
 from index_valuation.providers.nasdaq_history import NasdaqHistory
+from index_valuation.providers.total_return import TotalReturnSources
 from index_valuation.providers.us_calendar import USCalendar
 from index_valuation.providers.yahoo_etf_valuation import YahooETFValuation
 from index_valuation.providers.yahoo_history import YahooHistory
 from index_valuation.registry import load_indices
 from index_valuation.repository import Repository
+from index_valuation.total_returns import TotalReturnCollector
 
 
 def incremental_start(spec, existing):
@@ -151,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
         ("backfill-history", "从发布日期回填指数历史参考序列并检查成分重算缺口"),
         ("backfill-fundamentals", "补齐已知成分公司的历史 PE TTM 和隐含 EPS TTM"),
         ("backfill-index", "回填全部指数点位、PE/PB/PS并生成独立的指数估值带"),
+        ("backfill-returns", "单独回填已配置的分红再投资全收益历史，不重新请求价格和PE"),
         ("update-index", "增量更新指数直接估值，无需成分数据"),
         ("build-index", "只用已入库指数数据生成隐含 EPS 和估值带"),
         ("status", "查看最近一次任务报告"),
@@ -174,6 +177,7 @@ def main(argv: list[str] | None = None) -> int:
             "backfill-history",
             "backfill-fundamentals",
             "backfill-index",
+            "backfill-returns",
             "update-index",
         }:
             command_parser.add_argument(
@@ -247,6 +251,9 @@ def main(argv: list[str] | None = None) -> int:
             )
         engine = build_engine(settings)
         repository = Repository(engine)
+        return_collector = TotalReturnCollector(
+            repository, TotalReturnSources(settings, archive), settings.data_dir / "exports"
+        )
         pipeline = Pipeline(
             repository,
             weights_source,
@@ -261,6 +268,7 @@ def main(argv: list[str] | None = None) -> int:
                 "backfill-index",
                 "update-index",
                 "backfill-history",
+                "backfill-returns",
             }:
                 results.append(
                     record_paused_collection(
@@ -296,8 +304,20 @@ def main(argv: list[str] | None = None) -> int:
                 reference_sources[name](archive, settings.source_timeout)
                 for name in spec.additional_history_sources
             )
-            if args.command in {"backfill-index", "update-index", "build-index"}:
+            if args.command == "backfill-returns":
+                collection = return_collector.run(spec, start=args.start, end=args.end)
+                if spec.total_return:
+                    result = IndexSeries(repository, settings.data_dir / "exports").refresh(spec)
+                    result["total_return_collection"] = collection
+                    if collection["status"] in {"failed", "partial", "blocked"}:
+                        result["status"] = "partial"
+                    repository.finish_run(UUID(result["run_id"]), result["status"], result)
+                    Path(result["report_path"]).write_text(json_text(result), encoding="utf-8")
+                else:
+                    result = collection
+            elif args.command in {"backfill-index", "update-index", "build-index"}:
                 collection = None
+                return_collection = None
                 if args.command != "build-index":
                     now = datetime.now(ZoneInfo(spec.timezone))
                     end = args.end or (
@@ -325,7 +345,18 @@ def main(argv: list[str] | None = None) -> int:
                         calendar_fallback_factory=primary_factory if spec.market == "CN" else None,
                         additional_sources=additional_sources,
                     ).run(spec, start, end, allow_today=True)
+                    if spec.total_return:
+                        return_collection = return_collector.run(
+                            spec,
+                            start=args.start,
+                            end=end,
+                            incremental=args.command == "update-index",
+                        )
                 result = IndexSeries(repository, settings.data_dir / "exports").refresh(spec)
+                if return_collection:
+                    result["total_return_collection"] = return_collection
+                    if return_collection["status"] in {"partial", "failed", "blocked"}:
+                        result["status"] = "partial"
                 if collection:
                     result["collection"] = collection
                     if collection.get("status") == "failed" or any(
@@ -369,7 +400,13 @@ def main(argv: list[str] | None = None) -> int:
                 }
                 if "report" in result:
                     result["report"].pop("checks", None)
-            if result.get("status") in {"blocked", "failed", "waiting_for_close", "partial"}:
+            if result.get("status") in {
+                "blocked",
+                "failed",
+                "waiting_for_close",
+                "partial",
+                "unsupported",
+            }:
                 exit_code = 2
             results.append(result)
         print(json_text(results))

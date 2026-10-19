@@ -171,3 +171,23 @@ class IndexSeriesRecord(Base):
     details: Mapped[dict[str, Any]] = mapped_column(JSONB)
     run_id: Mapped[UUID] = mapped_column(ForeignKey("pipeline_runs.id"))
     calculated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class TotalReturnObservation(Base):
+    """Return-index levels never enter price/PE/EPS valuation tables."""
+
+    __tablename__ = "total_return_observations"
+    __table_args__ = (CheckConstraint("price > 0", name="positive_return_level"),)
+    index_key: Mapped[str] = mapped_column(ForeignKey("indices.key"), primary_key=True)
+    index_code: Mapped[str] = mapped_column(String(32), primary_key=True)
+    source: Mapped[str] = mapped_column(String(32), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
+    basis: Mapped[str] = mapped_column(String(32), primary_key=True)
+    trade_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    price: Mapped[Decimal] = mapped_column(AMOUNT)
+    currency: Mapped[str] = mapped_column(String(3))
+    quote_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    artifact_path: Mapped[str]
+    raw: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("pipeline_runs.id"))

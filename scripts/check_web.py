@@ -31,6 +31,49 @@ async def check_price_return(page, data):
         )
     if summary["price_status"] == "unverified":
         await expect(page.locator("#return-status")).to_contain_text("未核验价格")
+    await check_total_return(page, data)
+
+
+async def check_total_return(page, data):
+    summary = data["total_return"]
+    value = summary["annualized_return_pct"]
+    expected = "—" if value is None else f"{'+' if float(value) > 0 else ''}{display(value)}%"
+    await expect(page.locator("#total-annualized-return")).to_have_text(expected)
+    window = f"近{data['chart_years']}年" if data["chart_years"] else "全部历史"
+    if summary["coverage_status"] == "partial":
+        coverage = (
+            f"实际{summary['elapsed_days']}天"
+            if summary["status"] == "ok" and summary["elapsed_days"] < 365
+            else "历史不完整"
+        )
+        window = f"所选{window} · {coverage}"
+    await expect(page.locator("#total-return-basis")).to_have_text(f"{window} · 税前分红再投资")
+    if summary["start_date"]:
+        await expect(page.locator("#total-return-range")).to_have_text(
+            f"{summary['start_date']} 至 {summary['end_date']}"
+        )
+        assert summary["requested_start"] <= summary["start_date"]
+        assert summary["end_date"] <= summary["requested_end"]
+    else:
+        await expect(page.locator("#total-return-range")).to_have_text(
+            "区间内暂无可计算的全收益点位"
+        )
+    if summary["index_code"]:
+        await expect(page.locator("#total-return-source")).to_contain_text(summary["index_code"])
+        await expect(page.locator("#total-return-source")).to_have_attribute(
+            "href", summary["identity_url"]
+        )
+    if summary["reason"]:
+        await expect(page.locator("#total-return-status")).to_contain_text(summary["reason"])
+    else:
+        await expect(page.locator("#total-return-status")).to_be_hidden()
+    if value is not None:
+        assert summary["status"] == "ok"
+        assert summary["basis"] == "gross_total_return"
+        assert summary["elapsed_days"] > 0
+    if summary["aligned_with_price_return"]:
+        assert summary["start_date"] == data["price_return"]["start_date"]
+        assert summary["end_date"] == data["price_return"]["end_date"]
 
 
 async def check_panic_line(page, data, mode="fixed"):
@@ -358,6 +401,7 @@ async def check_additional_indices(page, dashboards):
         await page.set_viewport_size({"width": 390, "height": 844})
         await page.wait_for_function("document.getElementById('chart').viewBox.baseVal.width < 500")
         assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
+        await check_total_return(page, data)
         await page.screenshot(path=OUTPUT / f"{key}-web-mobile.png", full_page=True)
         results.append({"index": key, "latest_date": data["available_end"], "csv_rows": len(rows)})
     return results
@@ -454,6 +498,7 @@ async def main():
             await page.locator("#as-of").dispatch_event("change")
             await expect(page.locator("#annualized-return")).to_have_text("—")
             await expect(page.locator("#return-status")).to_contain_text("至少需要两个")
+            await expect(page.locator("#total-annualized-return")).to_have_text("—")
             await page.locator("#as-of").fill("2004-12-31")
             await page.locator("#as-of").dispatch_event("change")
             await expect(page.locator("#pe")).to_have_text("—")
@@ -538,6 +583,8 @@ async def main():
                     "fixed_bands",
                     "rolling_mean_pe_and_points",
                     "annualized_price_return_with_chart_window_and_as_of",
+                    "annualized_total_return_with_chart_window_as_of_and_real_coverage",
+                    "total_return_mapping_quality_and_mobile_layout",
                     "price_return_independent_of_pe_window_and_missing_pe",
                     "return_endpoints_match_csv_and_single_date_stays_empty",
                     "quantile_bands",

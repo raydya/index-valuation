@@ -112,6 +112,9 @@ def create_app(*, repository=None, specs=None, settings=None, scheduled_tasks=No
                 as_of=as_of,
                 chart_years=chart_years,
                 history_years=history_years,
+                total_return_points=repository.total_return_points(specs[key])
+                if specs[key].total_return
+                else [],
             )
 
             # Current lines come from the persisted current-method sequence. The

@@ -70,6 +70,7 @@ uv run index-valuation backfill-index --index sse
 uv run index-valuation backfill-index --index chinext
 uv run index-valuation backfill-index --index star50
 uv run index-valuation backfill-index --index hstech
+uv run index-valuation backfill-index --index csidividend
 uv run index-valuation backfill-index --index divlowvol
 uv run index-valuation backfill-index --index sp500
 uv run index-valuation backfill-index --index nasdaq100
@@ -87,15 +88,25 @@ uv run index-valuation build-index --index csi300
 
 也可用 `make backfill-index`、`make daily`、`make web`。网页支持指数切换、1/3/5/10年及全部区间、指定日期回看、3/5/10年及全部历史统计窗口、固定倍数 band（保留8倍，各指数可配置）、历史平均 PE 虚线、滚动分位 band、PE 走势、逐日数据和 CSV 导出。接口为只读，仅绑定 `127.0.0.1`。读网页不需要 OpenD 在线，但 PostgreSQL 必须可访问。
 
-顶部“年化收益”按图表所选区间的首末可用点位计算复合年化涨幅，随区间和历史日期变化，显示实际起止日期。该值**不含分红**，与 PE 统计窗口独立；计算公式、短历史和价格质量处理见[年化收益说明](docs/direct-index-valuation.md#年化收益)。
+页面并列显示“价格年化”和“分红再投资年化”，跟随图表所选区间及历史日期，分别显示实际起止日期。前者不含分红，后者使用独立采集的**税前全收益指数**，不从当前股息率估算；缺少全收益历史时显示原因。两者均与 PE 统计窗口独立，区间不同会明确提示。计算、来源及质量规则见[年化收益说明](docs/direct-index-valuation.md#年化收益)，实际覆盖和限制见[分红再投资接入记录](docs/total-return-integration-2026-10-19.md)。
 
-直达：[沪深300](http://127.0.0.1:8000/?index=csi300)、[中证A500](http://127.0.0.1:8000/?index=csia500)、[上证指数](http://127.0.0.1:8000/?index=sse)、[创业板指](http://127.0.0.1:8000/?index=chinext)、[科创50](http://127.0.0.1:8000/?index=star50)、[恒生科技](http://127.0.0.1:8000/?index=hstech)、[红利低波](http://127.0.0.1:8000/?index=divlowvol)。切换后刷新会保留所选指数。实际 PE 历史少于所选统计年限时，页面明确提示并显示实际样本起止日期。
+已有项目先运行 `uv run --locked alembic upgrade head` 创建独立的全收益数据表（迁移 `0007`）。为已有指数首次补充全收益历史，可运行以下命令；日后 `update-index` 和原有定时任务会一起更新，无需另设调度：
+
+```bash
+uv run --locked index-valuation backfill-returns --all
+# 或只补充一个指数；支持 --start / --end
+uv run --locked index-valuation backfill-returns --index csidividend
+```
+
+直达：[沪深300](http://127.0.0.1:8000/?index=csi300)、[中证A500](http://127.0.0.1:8000/?index=csia500)、[上证指数](http://127.0.0.1:8000/?index=sse)、[创业板指](http://127.0.0.1:8000/?index=chinext)、[科创50](http://127.0.0.1:8000/?index=star50)、[恒生科技](http://127.0.0.1:8000/?index=hstech)、[中证红利](http://127.0.0.1:8000/?index=csidividend)、[红利低波](http://127.0.0.1:8000/?index=divlowvol)。切换后刷新会保留所选指数。实际 PE 历史少于所选统计年限时，页面明确提示并显示实际样本起止日期。
 
 沪深300数据覆盖 **2002-01-04 至 2026-10-13 的6,007个交易日**。富途 PE / PB / PS 各5,286条，隐含 EPS 5,286条，始于2005-01-04。2005-04-08之前标记为回溯数据，2002—2004年没有 PE 的日期保留点位、估值为空。[采集报告](docs/index-web-2026-10-13.md)
 
 中证A500（`SH.000510`）点位覆盖 **2004-12-31 至 2026-10-13 的5,287个交易日**；富途 PE / PB / PS 及隐含 EPS 各495条，始于正式发布日2024-09-23。发布前只展示可用回溯点位；不借用沪深300或中证 PE 填充。已纳入 `update-index --all` 的每日更新。[接入报告](docs/csia500-index-2026-10-13.md)
 
 新接入的上证指数、创业板指、科创50、恒生科技使用同一流程；市场、独立参考源、供应商代码映射和 band 倍数均由配置决定。上证指数等成分数量可变的指数允许不指定固定成分数（迁移 `0006`）。恒生科技使用 HKD 原生指数点位，未进行人民币换算。[四指数接入与核验报告](docs/new-indices-2026-10-13.md)
+
+中证红利接入**中证红利指数 000922**（富途 `SH.000922`），共100只成分，展示价格指数。正式发布日期为2008-05-26，基日为2004-12-31；发布前数据标为回溯。点位和 PE 采用富途 OpenD，中证官方点位及滚动 PE 单独对照，BaoStock、东方财富提供价格核验及补源。复用现有估值带、均值和分位计算，并自动纳入每日 A 股更新。[中证红利接入记录](docs/csidividend-index-2026-10-19.md)
 
 红利低波接入**中证红利低波动指数 H30269**，共50只成分。采用中证官方日度滚动 PE 和价格指数点位，东方财富点位、雪球基金 PE 用作对照。2026-10-14起使用官方优先方法 `csindex_index_implied_daily_v2`：第三方差异或缺失只作提示，官方数据继续参与 EPS、估值带及历史统计，缺失官方 PE 不替补。旧方法结果保留，新方法从已有完整历史重建，并已纳入每日更新。[红利低波接入与规则修订记录](docs/divlowvol-index-2026-10-13.md)
 

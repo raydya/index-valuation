@@ -183,6 +183,9 @@ def test_api_records_are_window_independent_and_download_matches_dashboard():
         def greed_lines(self, specs, as_of=None):
             return {}
 
+        def total_return_points(self, spec):
+            return []
+
         def index_series(self, key, method):
             return [
                 {

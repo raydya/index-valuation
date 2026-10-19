@@ -32,11 +32,11 @@ def test_market_update_includes_new_indices_without_touching_other_markets(
     markets, tmp_path, monkeypatch
 ):
     specs = load_indices()
-    specs["future_us"] = replace(specs["sp500"], key="future_us")
+    specs["future_us"] = replace(specs["nasdaq100"], key="future_us")
     settings = SimpleNamespace(
         indices_file=ROOT / "indices.toml", data_dir=tmp_path, source_timeout=1
     )
-    collected, built, paused = [], [], []
+    collected, returns_collected, built, paused = [], [], [], []
     monkeypatch.setattr(cli, "Settings", lambda: settings)
     monkeypatch.setattr(cli, "load_indices", lambda _: specs)
     monkeypatch.setattr(cli, "build_engine", lambda _: SimpleNamespace(dispose=lambda: None))
@@ -66,6 +66,23 @@ def test_market_update_includes_new_indices_without_touching_other_markets(
         built.append(spec.key)
         return {"status": "collected", "index": spec.key}
 
+    def collect_returns(spec, **kwargs):
+        assert kwargs["incremental"] is True
+        assert kwargs["start"] is None
+        returns_collected.append(spec.key)
+        return {"status": "collected", "index": spec.key}
+
+    def no_external_requests(*_args, **_kwargs):
+        raise AssertionError("Scheduling unit tests must not request external return data")
+
+    monkeypatch.setattr(
+        cli,
+        "TotalReturnSources",
+        lambda *_: SimpleNamespace(history=no_external_requests, trading_days=no_external_requests),
+    )
+    monkeypatch.setattr(
+        cli, "TotalReturnCollector", lambda *_: SimpleNamespace(run=collect_returns)
+    )
     monkeypatch.setattr(
         cli, "HistoricalBackfill", lambda *_args, **_kwargs: SimpleNamespace(run=collect)
     )
@@ -75,7 +92,9 @@ def test_market_update_includes_new_indices_without_touching_other_markets(
     assert cli.main(command) == (2 if any(not s.collection_enabled for s in selected) else 0)
     expected = [s.key for s in selected if s.collection_enabled]
     assert collected == built == expected
+    assert returns_collected == [s.key for s in selected if s.collection_enabled and s.total_return]
     assert ("future_us" in collected) == (markets is None or "US" in markets)
+    assert ("future_us" in returns_collected) == (markets is None or "US" in markets)
     assert [r["index"] for r in paused] == [s.key for s in selected if not s.collection_enabled]
     for report in paused:
         assert report["status"] == "blocked" and report["sources"] == {}

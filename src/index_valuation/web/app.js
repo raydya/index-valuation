@@ -6,7 +6,7 @@ const colors = ['#258c88', '#469ca3', '#467bb5', '#706ea9', '#a08b6c', '#b47628'
 const meanColor = '#b54d64';
 const panicColor = '#18875b';
 const greedColor = '#c44336';
-const sourceNames = { futu: '富途 OpenD', futorest: '富途 REST', csindex: '中证指数', cnindex: '国证指数', fred: 'FRED（官方数据分发）', nasdaq: 'Nasdaq 官方', yahoo: 'Yahoo Finance', google: 'Google Finance', yahooetf: 'Yahoo ETF 代理', baostock: 'BaoStock', eastmoney: '东方财富', danjuan: '雪球基金', multpl: 'Multpl', gurufocus: 'GuruFocus' };
+const sourceNames = { futu: '富途 OpenD', futorest: '富途 REST', csindex: '中证指数', cnindex: '国证指数', fred: 'FRED（官方数据分发）', nasdaq: 'Nasdaq 官方', hsi: '恒生指数官方', yahoo: 'Yahoo Finance', google: 'Google Finance', yahooetf: 'Yahoo ETF 代理', baostock: 'BaoStock', eastmoney: '东方财富', danjuan: '雪球基金', multpl: 'Multpl', gurufocus: 'GuruFocus' };
 const peBasisNames = { multpl_reported_ttm_current_estimate: '过去12个月已报告盈利，当前 PE 为估算', gurufocus_published_pe_unconfirmed: '供应商指数 PE；盈利、加权及亏损处理未完整确认', csindex_published_rolling_pe: '中证发布的滚动 PE', danjuan_published_pe_ttm: '雪球基金发布的 PE TTM；与官方计算用股本口径分别保存' };
 const num = value => value == null || value === '' || !Number.isFinite(Number(value)) ? null : Number(value);
 const fmt = (value, digits = 2) => num(value) == null ? '—' : num(value).toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
@@ -85,6 +85,7 @@ function render() {
   setText('pbps', `${fmt(p.pb, 3)} / ${fmt(p.ps, 3)}`);
   setText('price-source', `${sourceNames[p.price_source] || '待补数据'} · ${p.trade_date}`);
   renderPriceReturn();
+  renderTotalReturn();
   setText('percentile-label', `${windowName()} PE 分位`);
   setText('percentile', percent(p.percentile));
   setText('history-count', `${fmt(p.history_count, 0)} 个${d.index.valuation.history_frequency === 'weekly' ? '周' : '历史'}观测${p.history_count < d.minimum_history ? '，样本不足' : p.history_span_short ? `，历史不足${d.history_years}年` : ''}`);
@@ -244,6 +245,29 @@ function renderPriceReturn() {
   $('return-status').hidden = notes.length === 0;
   $('annualized-return').title = r.start_price && r.end_price
     ? `${sourceNames[r.start_source] || r.start_source} ${fmt(r.start_price)} → ${sourceNames[r.end_source] || r.end_source} ${fmt(r.end_price)}；相隔 ${r.elapsed_days} 天`
+    : '';
+}
+
+function renderTotalReturn() {
+  const r = state.data.total_return;
+  const value = num(r?.annualized_return_pct);
+  const window = state.chartYears ? `近${state.chartYears}年` : '全部历史';
+  const period = r?.coverage_status === 'partial'
+    ? `所选${window} · ${r.status === 'ok' && r.elapsed_days < 365 ? `实际${fmt(r.elapsed_days, 0)}天` : '历史不完整'}`
+    : window;
+  setText('total-annualized-return', value == null ? '—' : `${value > 0 ? '+' : ''}${fmt(value, 2)}%`);
+  setText('total-return-basis', `${period} · 税前分红再投资`);
+  setText('total-return-range', r?.start_date ? `${r.start_date} 至 ${r.end_date}` : '区间内暂无可计算的全收益点位');
+  setText('total-return-source', r?.index_code ? `${sourceNames[r.source] || r.source} · ${r.index_code}` : '全收益数据暂不可用');
+  $('total-return-source').title = r?.index_name || '';
+  if (r?.identity_url) $('total-return-source').href = r.identity_url;
+  else $('total-return-source').removeAttribute('href');
+  let reason = r?.reason || (r ? '' : '尚未接入全收益指数数据。');
+  if (!r?.start_date && r?.latest_available_date) reason += ` 最新可用数据 ${r.latest_available_date}。`;
+  setText('total-return-status', reason);
+  $('total-return-status').hidden = !reason;
+  $('total-annualized-return').title = r?.start_price && r?.end_price
+    ? `${r.index_name}：${sourceNames[r.start_source] || r.start_source} ${fmt(r.start_price)} → ${sourceNames[r.end_source] || r.end_source} ${fmt(r.end_price)}；相隔 ${r.elapsed_days} 天`
     : '';
 }
 
