@@ -8,7 +8,12 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 from zoneinfo import ZoneInfo
+
+from index_valuation.domain import DataError
+from index_valuation.run_journal import read_reports
+from index_valuation.telegram_notifications import notify_scheduled
 
 ROOT = Path(__file__).resolve().parents[1]
 ZONE = ZoneInfo("Asia/Shanghai")
@@ -44,12 +49,23 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     root = ROOT
     selection = ["--market", *args.market] if args.market else ["--all"]
-    command = [str(root / ".venv/bin/index-valuation"), "update-index", *selection]
+    batch_id = str(uuid4())
+    journal_path = root / "data/scheduler/index-runs" / f"{batch_id}.results.jsonl"
+    command = [
+        str(root / ".venv/bin/index-valuation"),
+        "update-index",
+        *selection,
+        "--result-journal",
+        str(journal_path),
+        "--batch-id",
+        batch_id,
+    ]
     market_key = {frozenset(("CN", "HK")): "asia", frozenset(("US",)): "us"}.get(
         frozenset(args.market or ()), "other"
     )
     path = root / "data/scheduler/index-runs" / f"{market_key}.latest.json"
     record = {
+        "batch_id": batch_id,
         "status": "running",
         "started_at": datetime.now(ZONE).isoformat(),
         "finished_at": None,
@@ -86,8 +102,28 @@ def main(argv=None) -> int:
             size = output.tell()
             output.buffer.seek(max(0, size - 8 * 1024 * 1024))
             record["run_ids"] = result_ids(output.buffer.read().decode("utf-8", errors="replace"))
+            if journal_path.exists():
+                try:
+                    reports = read_reports(journal_path, batch_id)
+                    record["run_ids"] = list(
+                        dict.fromkeys(
+                            report["run_id"] for report in reports if report.get("run_id")
+                        )
+                    )
+                except (OSError, ValueError, DataError):
+                    record["run_ids"] = []
+                    record["journal_status"] = "unreadable"
             record.update(exit_code=code, finished_at=datetime.now(ZONE).isoformat())
             save_receipt(path, record)
+    # Notification failure must never erase collection results or change its exit code.
+    try:
+        record["notification"] = notify_scheduled(root, record, journal_path)
+    except Exception:
+        record["notification"] = {"status": "failed", "error": "notification_error"}
+    try:
+        save_receipt(path, record)
+    except OSError:
+        print("通知状态回执写入失败；原更新结果和退出码保留。", file=sys.stderr)
     return code
 
 

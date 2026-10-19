@@ -90,6 +90,8 @@ uv run index-valuation build-index --index csi300
 
 页面并列显示“价格年化”和“分红再投资年化”，跟随图表所选区间及历史日期，分别显示实际起止日期。前者不含分红，后者使用独立采集的**税前全收益指数**，不从当前股息率估算；缺少全收益历史时显示原因。两者均与 PE 统计窗口独立，区间不同会明确提示。计算、来源及质量规则见[年化收益说明](docs/direct-index-valuation.md#年化收益)，实际覆盖和限制见[分红再投资接入记录](docs/total-return-integration-2026-10-19.md)。
 
+每日定时更新支持 **Telegram 私聊通知**：任务结束后汇总本轮结果、真实数据日期、PE、历史分位和估值区间，失败与缺口单独提示；默认关闭，绑定收件人后启用。配置、测试和失败补发见 [Telegram 通知说明](docs/telegram-notifications.md)。
+
 已有项目先运行 `uv run --locked alembic upgrade head` 创建独立的全收益数据表（迁移 `0007`）。为已有指数首次补充全收益历史，可运行以下命令；日后 `update-index` 和原有定时任务会一起更新，无需另设调度：
 
 ```bash

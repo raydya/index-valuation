@@ -127,7 +127,9 @@ def test_daily_jobs_forward_separate_market_scopes_and_preserve_partial_status(
         assert job["StartCalendarInterval"] == {"Hour": hour, "Minute": 0}
         assert runner.main(job["ProgramArguments"][2:]) == 2
         command, kwargs = calls[-1]
-        assert command[1:] == ["update-index", "--market", *markets]
+        assert command[1 : 3 + len(markets)] == ["update-index", "--market", *markets]
+        assert command[-4] == "--result-journal" and command[-2] == "--batch-id"
+        assert Path(command[-3]).name == f"{command[-1]}.results.jsonl"
         assert kwargs["timeout"] == 3600 and kwargs["cwd"] == tmp_path
         receipt = (
             tmp_path

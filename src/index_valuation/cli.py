@@ -41,6 +41,7 @@ from index_valuation.providers.yahoo_etf_valuation import YahooETFValuation
 from index_valuation.providers.yahoo_history import YahooHistory
 from index_valuation.registry import load_indices
 from index_valuation.repository import Repository
+from index_valuation.run_journal import ResultJournal
 from index_valuation.total_returns import TotalReturnCollector
 
 
@@ -166,6 +167,10 @@ def main(argv: list[str] | None = None) -> int:
             selection.add_argument(
                 "--market", nargs="+", choices=("CN", "HK", "US"), help="更新指定市场的所有指数"
             )
+            command_parser.add_argument(
+                "--result-journal", type=Path, help="逐指数持久化本次结果的独占 JSONL 路径"
+            )
+            command_parser.add_argument("--batch-id", type=UUID, help="本次调度批次 UUID")
         if command == "calculate":
             command_parser.add_argument("--date", type=date.fromisoformat, required=True)
             command_parser.add_argument(
@@ -190,6 +195,10 @@ def main(argv: list[str] | None = None) -> int:
             command_parser.add_argument("--symbols", nargs="+", help="只处理指定的已知成分证券")
             command_parser.add_argument("--refresh", action="store_true", help="重新采集已完成证券")
     args = parser.parse_args(argv)
+    if args.command == "update-index" and (
+        (args.result_journal is None) != (args.batch_id is None)
+    ):
+        parser.error("--result-journal 和 --batch-id 必须一起使用")
     if args.command == "check-db" and args.wait < 0:
         parser.error("--wait 必须大于或等于 0")
     if args.command == "serve" and not 1024 <= args.port <= 65535:
@@ -210,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
 
         uvicorn.run(create_app(settings=settings), host="127.0.0.1", port=args.port)
         return 0
-    engine, rest_client = None, None
+    engine, rest_client, journal = None, None, None
     try:
         specs = load_indices(settings.indices_file)
         if args.command == "list-indices":
@@ -222,6 +231,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise DataError("所选市场没有配置指数")
         else:
             selected = list(specs.values()) if args.all else [specs[args.index]]
+        if args.command == "update-index" and args.result_journal is not None:
+            journal = ResultJournal(args.result_journal, args.batch_id)
         archive = Archive(settings.data_dir / "raw")
         weights_source = CSIWeights(archive)
 
@@ -270,11 +281,12 @@ def main(argv: list[str] | None = None) -> int:
                 "backfill-history",
                 "backfill-returns",
             }:
-                results.append(
-                    record_paused_collection(
-                        repository, spec, settings.data_dir / "exports", args.end
-                    )
+                result = record_paused_collection(
+                    repository, spec, settings.data_dir / "exports", args.end
                 )
+                if journal is not None:
+                    journal.append(result)
+                results.append(result)
                 exit_code = 2
                 continue
             reference_sources = {
@@ -408,6 +420,8 @@ def main(argv: list[str] | None = None) -> int:
                 "unsupported",
             }:
                 exit_code = 2
+            if journal is not None:
+                journal.append(result)
             results.append(result)
         print(json_text(results))
         return exit_code
@@ -418,6 +432,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"任务失败：{error}", file=sys.stderr)
         return 1
     finally:
+        if journal is not None:
+            journal.close()
         if rest_client is not None:
             rest_client.close()
         if engine is not None:
