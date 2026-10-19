@@ -4,7 +4,8 @@ const $ = id => document.getElementById(id);
 const state = { index: new URLSearchParams(location.search).get('index'), chartYears: 5, historyYears: 5, asOf: null, mode: 'fixed', data: null, page: 0, hover: -1, request: null };
 const colors = ['#258c88', '#469ca3', '#467bb5', '#706ea9', '#a08b6c', '#b47628'];
 const meanColor = '#b54d64';
-const panicColor = '#c44336';
+const panicColor = '#18875b';
+const greedColor = '#c44336';
 const sourceNames = { futu: '富途 OpenD', futorest: '富途 REST', csindex: '中证指数', cnindex: '国证指数', fred: 'FRED（官方数据分发）', nasdaq: 'Nasdaq 官方', yahoo: 'Yahoo Finance', google: 'Google Finance', yahooetf: 'Yahoo ETF 代理', baostock: 'BaoStock', eastmoney: '东方财富', danjuan: '雪球基金', multpl: 'Multpl', gurufocus: 'GuruFocus' };
 const peBasisNames = { multpl_reported_ttm_current_estimate: '过去12个月已报告盈利，当前 PE 为估算', gurufocus_published_pe_unconfirmed: '供应商指数 PE；盈利、加权及亏损处理未完整确认', csindex_published_rolling_pe: '中证发布的滚动 PE', danjuan_published_pe_ttm: '雪球基金发布的 PE TTM；与官方计算用股本口径分别保存' };
 const num = value => value == null || value === '' || !Number.isFinite(Number(value)) ? null : Number(value);
@@ -124,36 +125,46 @@ function render() {
   renderTable();
   renderPanicLine();
   renderPanicReference();
+  document.dispatchEvent(new CustomEvent('index-view-changed', { detail: { key: d.index.key } }));
 }
 
 function renderPanicLine() {
-  const d = state.data, line = d.panic_line;
+  renderValuationLine('panic');
+  renderValuationLine('greed');
+  $('panic-live-section').hidden = false;
+}
+
+function renderValuationLine(kind) {
+  const d = state.data, line = d[`${kind}_line`];
+  const name = kind === 'panic' ? '恐慌' : '贪婪';
+  const colorName = kind === 'panic' ? '绿色' : '红色';
+  const lineText = (suffix, text) => setText(`${kind}-live-${suffix}`, text);
   const status = line?.status || 'not_calculated';
   const threshold = num(line?.threshold_pe), points = num(line?.reference_points), gap = num(line?.gap_pct);
   const years = line?.history_years || 5;
-  setText('panic-live-stamp', `估值日期 ${line?.as_of || d.selected.trade_date} · ${sourceNames[line?.source] || d.index.valuation.label}`);
-  setText('panic-live-status', PANIC_STATUS[status] || '暂无可用线');
-  setText('panic-live-threshold', threshold == null ? '暂不设定' : `${fmt(threshold)}×`);
-  setText('panic-live-threshold-note', `此前${years}年 P${fmt((num(line?.quantile) ?? .1) * 100, 0)}${line?.threshold_to_mean == null ? '' : ` · 均值的 ${percent(num(line.threshold_to_mean) * 100)}`}`);
-  setText('panic-live-points', fmt(points));
-  setText('panic-live-points-note', points == null ? '缺少有效隐含 EPS 或恐慌 PE，保留空值' : `${line.as_of} 隐含 EPS × ${fmt(threshold)}倍`);
-  setText('panic-live-gap', gap == null ? '—' : gap === 0 ? '等于恐慌线' : `${gap > 0 ? '高于' : '低于'} ${percent(Math.abs(gap))}`);
+  lineText('stamp', `估值日期 ${line?.as_of || d.selected.trade_date} · ${sourceNames[line?.source] || d.index.valuation.label}`);
+  lineText('status', PANIC_STATUS[status] || '暂无可用线');
+  lineText('threshold', threshold == null ? '暂不设定' : `${fmt(threshold)}×`);
+  lineText('threshold-note', `此前${years}年 P${fmt((num(line?.quantile) ?? (kind === 'panic' ? .1 : .9)) * 100, 0)}${line?.threshold_to_mean == null ? '' : ` · 均值的 ${percent(num(line.threshold_to_mean) * 100)}`}`);
+  lineText('points', fmt(points));
+  lineText('points-note', points == null ? `缺少有效隐含 EPS 或${name} PE，保留空值` : `${line.as_of} 隐含 EPS × ${fmt(threshold)}倍`);
+  lineText('gap', gap == null ? '—' : gap === 0 ? `等于${name}线` : `${gap > 0 ? '高于' : '低于'} ${percent(Math.abs(gap))}`);
   const selectedPe = line?.pe ?? d.selected.pe;
-  setText('panic-live-selected', `${line?.as_of || d.selected.trade_date} · PE ${selectedPe == null ? '缺失' : `${fmt(selectedPe, 3)}×`}`);
-  setText('panic-live-count', num(line?.history_count) == null ? '—' : `${fmt(line.history_count, 0)} 个${line.history_frequency === 'weekly' ? '周' : '日'}观测`);
-  setText('panic-live-history', line?.history_start ? `${line.history_start} 至 ${line.history_end}${line.history_complete ? '' : ' · 不足完整5年'}` : '暂无有效 PE 历史');
+  lineText('selected', `${line?.as_of || d.selected.trade_date} · PE ${selectedPe == null ? '缺失' : `${fmt(selectedPe, 3)}×`}`);
+  lineText('count', num(line?.history_count) == null ? '—' : `${fmt(line.history_count, 0)} 个${line.history_frequency === 'weekly' ? '周' : '日'}观测`);
+  lineText('history', line?.history_start ? `${line.history_start} 至 ${line.history_end}${line.history_complete ? '' : ' · 不足完整5年'}` : '暂无有效 PE 历史');
   const notes = {
-    reference: points == null ? 'PE 恐慌线已计算；所选日隐含 EPS 不可用，仅在 PE 走势图绘线。' : '红色水平线与上方图表一致；每日估值更新会重新计算并保存。',
-    insufficient_history: '需要跨度满5年的同口径 PE 历史及足够有效样本；历史不足时不以短样本替代恐慌线。',
+    reference: points == null ? `PE ${name}线已计算；所选日隐含 EPS 不可用，仅在 PE 走势图绘线。` : `${colorName}水平线与上方图表一致；每日估值更新会重新计算并保存。`,
+    insufficient_history: `需要跨度满5年的同口径 PE 历史及足够有效样本；历史不足时不以短样本替代${name}线。`,
     missing_pe: '所选日缺少有效正 PE，暂停绘线和差距比较，不挪用相邻日期的数据。',
-    collection_paused: '该指数已暂停采集，保留旧数据查阅，不生成新的恐慌线。',
+    collection_paused: `该指数已暂停采集，保留旧数据查阅，不生成新的${name}线。`,
     unusable_pe: '所选日 PE 未通过该方法的可用性要求，暂停绘线和差距比较。',
     different_basis: '所选日 PE 与当前来源口径不一致，暂停绘线和差距比较。',
     different_method: '所选日估值方法与当前方法不一致，暂停绘线和差距比较。',
-    not_calculated: '当前方法尚无已计算的恐慌线；完成估值更新后自动生成。',
+    not_calculated: `当前方法尚无已计算的${name}线；完成估值更新后自动生成。`,
   };
-  setText('panic-live-note', notes[status] || '暂无可用恐慌线。');
-  $('panic-live-overview-rows').innerHTML = (d.panic_overview || []).map(row => {
+  lineText('note', notes[status] || `暂无可用${name}线。`);
+  $(`${kind}-live-overview-rows`).innerHTML = (d[`${kind}_overview`] || []).map(row => {
     const item = row.line, itemStatus = item?.status || 'not_calculated';
     return `<tr${row.key === d.index.key ? ' class="panic-current" aria-current="true"' : ''}>
       <td><a href="/?index=${encodeURIComponent(row.key)}">${esc(row.name)}</a></td>
@@ -161,7 +172,6 @@ function renderPanicLine() {
       <td>${esc(sourceNames[item?.source] || '—')}</td><td>${esc(item?.as_of || '—')}</td>
       <td>${fmt(item?.history_count, 0)}</td><td>${esc(PANIC_STATUS[itemStatus] || '暂无可用线')}</td></tr>`;
   }).join('') || '<tr><td colspan="7" class="panic-empty">尚无已计算的结果</td></tr>';
-  $('panic-live-section').hidden = false;
 }
 
 function renderPanicReference() {
@@ -250,18 +260,21 @@ function meanDefinition() {
   return { label: `${windowName()}平均 PE`, color: meanColor, field: state.mode === 'pe' ? 'mean_pe' : 'mean_points', mean: true };
 }
 
-function panicLineDefinition() {
-  const line = state.data.panic_line;
+function valuationLineDefinition(kind) {
+  const line = state.data[`${kind}_line`];
   if (line?.status !== 'reference' || num(line.pe) <= 0 || state.data.selected.pe_usable === false) return null;
+  const name = kind === 'panic' ? '恐慌' : '贪婪';
+  const quantile = kind === 'panic' ? 'P10' : 'P90';
   const pe = num(line.threshold_pe);
   const value = state.mode === 'pe' ? pe : num(line.reference_points);
   if (pe == null || pe <= 0 || value == null || value <= 0) return null;
   return {
+    kind, name, color: kind === 'panic' ? panicColor : greedColor,
     value,
-    label: `恐慌 ${fmt(pe)}×${state.mode === 'pe' ? '' : ` · ${fmt(value)}点`}`,
+    label: `${name} ${fmt(pe)}×${state.mode === 'pe' ? '' : ` · ${fmt(value)}点`}`,
     note: state.mode === 'pe'
-      ? `恐慌水平线为 ${line.as_of} 之前近5年有效 PE 的 P10：${fmt(pe)}×，随每日估值更新重算。`
-      : `恐慌水平线 = ${line.as_of} 隐含 EPS × ${fmt(pe)}倍，固定为 ${fmt(value)}点；PE 取此前近5年 P10，随每日估值更新重算。`,
+      ? `${name}水平线为 ${line.as_of} 之前近5年有效 PE 的 ${quantile}：${fmt(pe)}×，随每日估值更新重算。`
+      : `${name}水平线 = ${line.as_of} 隐含 EPS × ${fmt(pe)}倍，固定为 ${fmt(value)}点；PE 取此前近5年 ${quantile}，随每日估值更新重算。`,
   };
 }
 
@@ -294,8 +307,8 @@ function renderChart() {
   const actualLabel = state.mode === 'pe' ? (state.data.index.valuation.proxy_symbol ? 'ETF 代理 PE' : '指数 PE') : '收盘点位';
   const valueFor = (row, def) => num(def.mean ? row[def.field] : row[def.field]?.[def.key]);
   const values = rows.flatMap(row => [num(row[actualKey]), ...definitions.map(def => valueFor(row, def))]).filter(v => v != null);
-  const panicLine = panicLineDefinition();
-  if (panicLine) values.push(panicLine.value);
+  const referenceLines = ['panic', 'greed'].map(valuationLineDefinition).filter(Boolean);
+  values.push(...referenceLines.map(line => line.value));
   $('tooltip').hidden = true;
   setText('chart-title', { fixed: 'PE 估值带', quantile: '历史分位估值带', pe: 'PE 历史走势' }[state.mode] + (sampled ? ' · 按 PE 实际采样日' : ''));
   document.querySelectorAll('[data-mode]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === state.mode)));
@@ -338,16 +351,39 @@ function renderChart() {
   content += `<path d="${line(row => num(row[actualKey]))}" fill="none" stroke="#203d88" stroke-width="2.3" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`;
   const last = rows[rows.length - 1];
   if (num(last[actualKey]) != null) content += `<circle cx="${x(rows.length - 1)}" cy="${y(num(last[actualKey]))}" r="4" fill="#203d88" stroke="white" stroke-width="2"/>`;
-  if (panicLine) {
-    const py = y(panicLine.value);
-    content += `<g><title>${esc(panicLine.note)}</title><line id="panic-line" data-value="${panicLine.value}" x1="${margin.left}" x2="${width - margin.right}" y1="${py}" y2="${py}" stroke="${panicColor}" stroke-width="2" vector-effect="non-scaling-stroke"/><text id="panic-line-label" x="${width - margin.right - 5}" y="${Math.max(margin.top + 15, py - 8)}" text-anchor="end" style="fill:${panicColor}">${esc(panicLine.label)}</text></g>`;
-  }
+  referenceLines.forEach(reference => {
+    const py = y(reference.value);
+    content += `<g><title>${esc(reference.note)}</title><line id="${reference.kind}-line" data-value="${reference.value}" x1="${margin.left}" x2="${width - margin.right}" y1="${py}" y2="${py}" stroke="${reference.color}" stroke-width="2" vector-effect="non-scaling-stroke"/><text id="${reference.kind}-line-label" x="${width - margin.right - 5}" y="${Math.max(margin.top + 15, py - 8)}" text-anchor="end" style="fill:${reference.color}">${esc(reference.label)}</text></g>`;
+  });
   content += `<g id="chart-hover" visibility="hidden"><line id="hover-line" y1="${margin.top}" y2="${height - margin.bottom}" stroke="#97a6be" stroke-dasharray="4 4"/><circle id="hover-dot" r="4" fill="#203d88" stroke="white" stroke-width="2"/></g>`;
   svg.innerHTML = content;
+  positionReferenceLabels(svg, referenceLines, y, margin, width, height);
   plot = { rows, x, y, width, height, margin, actualKey };
-  $('legend').innerHTML = `<span><i style="--c:#203d88"></i>${actualLabel}</span>` + definitions.map(def => `<span><i${def.mean ? ' class="mean-key"' : ''} style="--c:${def.color}"></i>${esc(def.label)}</span>`).join('') + (panicLine ? `<span><i style="--c:${panicColor}"></i>恐慌估值线</span>` : '');
-  const panicNote = panicLine?.note || (state.data.panic_line?.status === 'reference' ? '所选日缺少可用隐含 EPS，恐慌点位线暂不绘制。' : '恐慌线暂不可用，原因见下方滚动恐慌估值线。');
-  setText('chart-caption', `${state.mode === 'fixed' ? '固定倍数线 = 当日隐含 EPS × 固定 PE；虚线 = 当日隐含 EPS × 历史平均 PE。' : state.mode === 'pe' ? '虚线为历史平均 PE。' : '虚线 = 当日隐含 EPS × 历史平均 PE。'} 均值与分位按${windowName()}滚动计算，仅用此前数据；不足 ${state.data.minimum_history} 个观测时留空。${state.data.selected.history_span_short ? ` 当前可用 PE 历史不足${state.data.history_years}年，按实际样本计算。` : ''} ${panicNote}`);
+  $('legend').innerHTML = `<span><i style="--c:#203d88"></i>${actualLabel}</span>` + definitions.map(def => `<span><i${def.mean ? ' class="mean-key"' : ''} style="--c:${def.color}"></i>${esc(def.label)}</span>`).join('') + referenceLines.map(reference => `<span><i style="--c:${reference.color}"></i>${reference.name}估值线</span>`).join('');
+  const lineNotes = ['panic', 'greed'].map(kind => referenceLines.find(reference => reference.kind === kind)?.note || (state.data[`${kind}_line`]?.status === 'reference' ? `所选日缺少可用隐含 EPS，${kind === 'panic' ? '恐慌' : '贪婪'}点位线暂不绘制。` : `${kind === 'panic' ? '恐慌' : '贪婪'}线暂不可用，原因见下方滚动估值线。`));
+  setText('chart-caption', `${state.mode === 'fixed' ? '固定倍数线 = 当日隐含 EPS × 固定 PE；虚线 = 当日隐含 EPS × 历史平均 PE。' : state.mode === 'pe' ? '虚线为历史平均 PE。' : '虚线 = 当日隐含 EPS × 历史平均 PE。'} 均值与分位按${windowName()}滚动计算，仅用此前数据；不足 ${state.data.minimum_history} 个观测时留空。${state.data.selected.history_span_short ? ` 当前可用 PE 历史不足${state.data.history_years}年，按实际样本计算。` : ''} ${lineNotes.join(' ')}`);
+}
+
+function positionReferenceLabels(svg, references, y, margin, width, height) {
+  const labels = references.map(reference => ({
+    node: $(`${reference.kind}-line-label`), lineY: y(reference.value),
+  })).sort((a, b) => a.lineY - b.lineY);
+  let previousBottom = margin.top - 4;
+  labels.forEach(({ node, lineY }) => {
+    const availableWidth = width - margin.left - margin.right - 10;
+    const naturalWidth = node.getComputedTextLength();
+    if (naturalWidth > availableWidth) {
+      node.setAttribute('textLength', availableWidth);
+      node.setAttribute('lengthAdjust', 'spacingAndGlyphs');
+    }
+    const box = node.getBBox();
+    const baseline = Number(node.getAttribute('y'));
+    const aboveBaseline = baseline - box.y;
+    const belowBaseline = box.height - aboveBaseline;
+    const desired = Math.max(margin.top + aboveBaseline + 2, lineY - 8, previousBottom + aboveBaseline + 5);
+    node.setAttribute('y', Math.min(height - margin.bottom - belowBaseline - 2, desired));
+    previousBottom = Number(node.getAttribute('y')) + belowBaseline;
+  });
 }
 
 function showHover(index) {

@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/app.js" defer></script>
   <script src="/static/scheduled-tasks.js" defer></script>
+  <script src="/static/market-overview.js" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -17,6 +18,13 @@
   </header>
   <main>
     <div id="error" role="alert" hidden><span id="error-text"></span><button id="retry" type="button">重新读取</button></div>
+    <section id="market-overview" class="market-overview" aria-labelledby="market-overview-title" aria-busy="true">
+      <div class="market-overview-heading"><div><h2 id="market-overview-title">指数现状总结</h2><p>全部指数的最新数据；下方切换历史估值日期不改变这里的判断。</p></div><button type="button" id="market-overview-refresh" disabled>正在读取…</button></div>
+      <div class="market-overview-status"><p id="market-overview-counts" aria-live="polite">正在读取各指数现状…</p><span id="market-overview-stamp">尚未读取</span></div>
+      <p id="market-overview-error" class="market-overview-error" role="alert" hidden></p>
+      <div id="market-overview-groups"><p class="market-overview-empty">正在读取最新 PE 和估值线…</p></div>
+      <details class="market-overview-rule"><summary>判断规则与颜色说明</summary><div><p id="market-overview-rule-text">同一方法、同一来源口径的此前5年有效 PE：P10 为恐慌线，P90 为贪婪线；排除当天、未来及发布前回溯数据。</p><ul><li><span class="market-dot market-dot-panic" aria-hidden="true"></span>绿灯：恐慌，持续买入（PE ≤ 恐慌线）</li><li><span class="market-dot market-dot-normal" aria-hidden="true"></span>黄灯：普通，继续持有（两条线之间）</li><li><span class="market-dot market-dot-greed" aria-hidden="true"></span>红灯：贪婪，减仓离场（PE ≥ 贪婪线）</li><li><span class="market-dot market-dot-unknown" aria-hidden="true"></span>灰灯：暂无判断，缺失、短历史或暂停采集时保留原因</li></ul><p>每项显示自身实际数据日期；PE 盈利期间、加权和亏损处理以各自来源说明为准。</p></div></details>
+    </section>
     <section class="overview" aria-labelledby="index-title">
       <div class="heading-row"><div><div class="security-code" id="code">—</div><h1 id="index-title">指数估值</h1><p id="benchmark-note" hidden></p></div><div class="data-stamp"><span class="status-dot"></span><span id="data-stamp">正在读取历史数据</span></div></div>
       <div class="metrics" aria-live="polite">
@@ -45,19 +53,33 @@
       <div id="tasks-list"><p class="tasks-empty">正在读取任务记录…</p></div>
       <p class="tasks-footnote">页面可见时每分钟刷新状态；“刷新状态”只读取记录，不会执行任务。下次计划不代表实际开始时间。</p>
     </section>
-    <section id="panic-live-section" class="panic-section" aria-labelledby="panic-live-title" hidden>
-      <div class="section-heading"><div><h2 id="panic-live-title">滚动恐慌估值线</h2><p id="panic-live-stamp"></p></div><span id="panic-live-status" class="panic-status"></span></div>
-      <p class="panic-intro">每次估值更新自动重算。只使用所选估值日之前、同一口径的近5年有效 PE，取低10%分位；不代表确定的市场底部。</p>
+    <section id="panic-live-section" class="panic-section valuation-lines-section" aria-labelledby="panic-live-title" hidden>
+      <div class="section-heading"><div><h2 id="panic-live-title">滚动恐慌与贪婪估值线</h2><p id="panic-live-stamp"></p></div></div>
+      <p class="panic-intro">每次估值更新自动重算。只使用所选估值日之前、同一口径的近5年有效 PE：P10 为绿色恐慌线，P90 为红色贪婪线。两条线均要求完整5年历史及足够样本。</p>
+      <div class="valuation-line-block valuation-line-panic"><div class="valuation-line-heading"><h3><span class="market-dot market-dot-panic" aria-hidden="true"></span>恐慌线 <span>P10</span></h3><span id="panic-live-status" class="panic-status"></span></div>
       <div class="panic-metrics">
         <div class="panic-metric"><span>恐慌 PE 参考线</span><strong id="panic-live-threshold">—</strong><small id="panic-live-threshold-note"></small></div>
         <div class="panic-metric"><span>对应指数点位</span><strong id="panic-live-points">—</strong><small id="panic-live-points-note">所选日隐含 EPS × 恐慌 PE</small></div>
         <div class="panic-metric"><span>所选日 PE 距恐慌线</span><strong id="panic-live-gap">—</strong><small id="panic-live-selected"></small></div>
         <div class="panic-metric"><span>统计样本</span><strong id="panic-live-count">—</strong><small id="panic-live-history"></small></div>
       </div>
-      <div class="panic-context"><p id="panic-live-note"></p><p>这是一条所选估值日的水平参考线：点位图按当天盈利换算，PE 走势图直接显示恐慌 PE 倍数。历史回看只使用该日期之前的观测，不包含当天及未来数据；来源历史可能含修订。图表区间和其他统计窗口不改变本线的5年规则。</p></div>
+      <div class="panic-context"><p id="panic-live-note"></p></div></div>
+      <div id="greed-live-section" class="valuation-line-block valuation-line-greed"><div class="valuation-line-heading"><div><h3><span class="market-dot market-dot-greed" aria-hidden="true"></span>贪婪线 <span>P90</span></h3><p id="greed-live-stamp" class="visually-hidden"></p></div><span id="greed-live-status" class="panic-status"></span></div>
+      <div class="panic-metrics">
+        <div class="panic-metric"><span>贪婪 PE 参考线</span><strong id="greed-live-threshold">—</strong><small id="greed-live-threshold-note"></small></div>
+        <div class="panic-metric"><span>对应指数点位</span><strong id="greed-live-points">—</strong><small id="greed-live-points-note">所选日隐含 EPS × 贪婪 PE</small></div>
+        <div class="panic-metric"><span>所选日 PE 距贪婪线</span><strong id="greed-live-gap">—</strong><small id="greed-live-selected"></small></div>
+        <div class="panic-metric"><span>统计样本</span><strong id="greed-live-count">—</strong><small id="greed-live-history"></small></div>
+      </div>
+      <div class="panic-context"><p id="greed-live-note"></p></div></div>
+      <div class="panic-context valuation-lines-method"><p>两条线都是所选估值日的水平参考线：点位图按当天有效隐含 EPS 换算，PE 走势图直接显示 PE 阈值。历史回看只使用该日期之前的观测，不包含当天及未来数据；来源历史可能含修订。图表区间和其他统计窗口不改变两条线的5年规则。</p></div>
       <details id="panic-live-overview" class="panic-details">
         <summary>各指数当前恐慌线 <span>历史回看时仅显示所选日及之前的结果</span></summary>
         <div class="table-scroll"><table class="history-table panic-table"><caption>各指数使用自身当前方法；来源口径、样本及缺口分别保留</caption><thead><tr><th>指数</th><th>恐慌 PE</th><th>对应点位</th><th>PE 来源</th><th>估值日期</th><th>样本数</th><th>状态</th></tr></thead><tbody id="panic-live-overview-rows"></tbody></table></div>
+      </details>
+      <details id="greed-live-overview" class="panic-details">
+        <summary>各指数当前贪婪线 <span>历史回看时仅显示所选日及之前的结果</span></summary>
+        <div class="table-scroll"><table class="history-table panic-table"><caption>各指数使用自身当前方法；来源口径、样本及缺口分别保留</caption><thead><tr><th>指数</th><th>贪婪 PE</th><th>对应点位</th><th>PE 来源</th><th>估值日期</th><th>样本数</th><th>状态</th></tr></thead><tbody id="greed-live-overview-rows"></tbody></table></div>
       </details>
     </section>
     <section id="panic-section" class="panic-section" aria-labelledby="panic-title" hidden>

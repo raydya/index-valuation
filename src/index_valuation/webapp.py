@@ -16,6 +16,7 @@ from index_valuation.config import Settings
 from index_valuation.db import build_engine
 from index_valuation.domain import DataError
 from index_valuation.index_series import build_dashboard, method_for, series_csv
+from index_valuation.market_overview import build_market_overview
 from index_valuation.panic_reference import load_panic_reference, panic_reference_for
 from index_valuation.registry import load_indices
 from index_valuation.repository import Repository
@@ -82,6 +83,13 @@ def create_app(*, repository=None, specs=None, settings=None, scheduled_tasks=No
     def get_scheduled_tasks():
         return Response(json_text(scheduled_tasks.snapshot()), media_type="application/json")
 
+    @app.get("/api/market-overview")
+    def get_market_overview():
+        return Response(
+            json_text(build_market_overview(specs, repository.latest_index_points(specs))),
+            media_type="application/json",
+        )
+
     @app.get("/api/panic-reference")
     def get_panic_reference():
         return Response(
@@ -124,6 +132,20 @@ def create_app(*, repository=None, specs=None, settings=None, scheduled_tasks=No
                     "key": spec.key,
                     "name": spec.name,
                     "line": visible_line(spec, lines.get(spec.key)),
+                }
+                for spec in specs.values()
+            ]
+            data["greed_line"] = visible_line(
+                specs[key], data["greed_line"], data["selected"]["trade_date"]
+            )
+            greed_lines = repository.greed_lines(
+                specs, as_of=data["selected"]["trade_date"] if as_of else None
+            )
+            data["greed_overview"] = [
+                {
+                    "key": spec.key,
+                    "name": spec.name,
+                    "line": visible_line(spec, greed_lines.get(spec.key)),
                 }
                 for spec in specs.values()
             ]

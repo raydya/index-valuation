@@ -8,8 +8,11 @@ from index_valuation.domain import DataError, decimal_or_none
 from index_valuation.valuation import quantile
 
 VERSION = "rolling_pe_p10_v1"
+GREED_VERSION = "rolling_pe_p90_v1"
+SIGNAL_VERSION = "rolling_pe_signal_v1"
 HISTORY_YEARS = 5
 PROBABILITY = Decimal("0.1")
+GREED_PROBABILITY = Decimal("0.9")
 
 
 def enrich_panic_lines(spec, points):
@@ -66,7 +69,12 @@ def enrich_panic_lines(spec, points):
             and first_usable <= lower
             and len(history) >= spec.band_min_observations
         )
-        threshold = quantile(history, PROBABILITY) if complete and spec.collection_enabled else None
+        thresholds = {
+            probability: quantile(history, probability)
+            if complete and spec.collection_enabled
+            else None
+            for probability in (PROBABILITY, GREED_PROBABILITY)
+        }
         mean_pe = total / len(history) if complete else None
         if not spec.collection_enabled:
             status = "collection_paused"
@@ -82,33 +90,58 @@ def enrich_panic_lines(spec, points):
             status = "insufficient_history"
         else:
             status = "reference"
-        compare = threshold is not None and usable
         eps = decimal_or_none(point.get("implied_eps"))
+        shared = {
+            "as_of": day,
+            "method": method,
+            "source": source,
+            "basis": basis,
+            "status": status,
+            "history_start": queue[0][0] if queue else None,
+            "history_end": queue[-1][0] if queue else None,
+            "history_count": len(history),
+            "history_complete": complete,
+            "history_years": HISTORY_YEARS,
+            "minimum_history": spec.band_min_observations,
+            "history_frequency": profile["history_frequency"],
+            "pe": pe,
+        }
+        lines = {}
+        for field, version, probability in (
+            ("panic_line", VERSION, PROBABILITY),
+            ("greed_line", GREED_VERSION, GREED_PROBABILITY),
+        ):
+            threshold = thresholds[probability]
+            compare = threshold is not None and usable
+            lines[field] = {
+                **shared,
+                "version": version,
+                "threshold_pe": threshold,
+                "threshold_to_mean": threshold / mean_pe if threshold is not None else None,
+                "quantile": probability,
+                "reference_points": eps * threshold
+                if compare and eps is not None and eps > 0
+                else None,
+                "gap_pct": (pe / threshold - 1) * 100 if compare else None,
+            }
+        lower_pe, upper_pe = thresholds[PROBABILITY], thresholds[GREED_PROBABILITY]
+        signal, signal_status = "unknown", status
+        if status == "reference":
+            if lower_pe >= upper_pe:
+                signal_status = "flat_distribution"
+            else:
+                signal = "panic" if pe <= lower_pe else "greed" if pe >= upper_pe else "normal"
         enriched.append(
             {
                 **point,
-                "panic_line": {
-                    "version": VERSION,
-                    "as_of": day,
-                    "method": method,
-                    "source": source,
-                    "basis": basis,
-                    "status": status,
-                    "threshold_pe": threshold,
-                    "threshold_to_mean": threshold / mean_pe if threshold is not None else None,
-                    "history_start": queue[0][0] if queue else None,
-                    "history_end": queue[-1][0] if queue else None,
-                    "history_count": len(history),
-                    "history_complete": complete,
-                    "history_years": HISTORY_YEARS,
-                    "minimum_history": spec.band_min_observations,
-                    "quantile": PROBABILITY,
-                    "history_frequency": profile["history_frequency"],
-                    "reference_points": eps * threshold
-                    if compare and eps is not None and eps > 0
-                    else None,
-                    "gap_pct": (pe / threshold - 1) * 100 if compare else None,
-                    "pe": pe,
+                **lines,
+                "valuation_signal": {
+                    **shared,
+                    "version": SIGNAL_VERSION,
+                    "status": signal_status,
+                    "signal": signal,
+                    "lower_pe": lower_pe,
+                    "upper_pe": upper_pe,
                 },
             }
         )

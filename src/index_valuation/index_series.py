@@ -458,6 +458,8 @@ def build_dashboard(spec, points, *, as_of=None, chart_years=5, history_years=5)
                             "pe_relative_error",
                             "phase",
                             "panic_line",
+                            "greed_line",
+                            "valuation_signal",
                         )
                     },
                     **bands,
@@ -504,6 +506,8 @@ def build_dashboard(spec, points, *, as_of=None, chart_years=5, history_years=5)
         "minimum_history": spec.band_min_observations,
         "selected": {**selected, **latest_bands},
         "panic_line": selected.get("panic_line"),
+        "greed_line": selected.get("greed_line"),
+        "valuation_signal": selected.get("valuation_signal"),
         "series": series,
         "coverage": {
             "price": sum(p["price"] is not None for p in points),
@@ -517,7 +521,7 @@ def build_dashboard(spec, points, *, as_of=None, chart_years=5, history_years=5)
 
 def series_csv(dashboard):
     rows = dashboard["series"]
-    panic_fields = (
+    line_fields = (
         "threshold_pe",
         "reference_points",
         "status",
@@ -570,16 +574,17 @@ def series_csv(dashboard):
     multiples = sorted(map(str, dashboard["index"]["band_multiples"]), key=Decimal)
     fields += [f"band_{m}x" for m in multiples]
     fields += [f"quantile_{q}" for q in map(str, QUANTILES)]
-    fields += [f"panic_{key}" for key in panic_fields]
+    fields += [f"{prefix}_{key}" for prefix in ("panic", "greed") for key in line_fields]
     output = StringIO(newline="")
     writer = csv.DictWriter(output, fieldnames=fields)
     writer.writeheader()
     for row in rows:
-        panic_line = (
-            (row.get("panic_line") or {})
+        lines = {
+            prefix: (row.get(f"{prefix}_line") or {})
             if dashboard["index"]["collection_enabled"]
             else {"status": "collection_paused", "as_of": row["trade_date"]}
-        )
+            for prefix in ("panic", "greed")
+        }
         writer.writerow(
             {
                 **{k: row.get(k) for k in fields if not k.startswith(("band_", "quantile_"))},
@@ -587,7 +592,11 @@ def series_csv(dashboard):
                 "history_frequency": dashboard["index"]["valuation"]["history_frequency"],
                 **{f"band_{m}x": row["fixed"].get(m) for m in multiples},
                 **{f"quantile_{q}": row["quantile_points"].get(str(q)) for q in QUANTILES},
-                **{f"panic_{key}": panic_line.get(key) for key in panic_fields},
+                **{
+                    f"{prefix}_{key}": line.get(key)
+                    for prefix, line in lines.items()
+                    for key in line_fields
+                },
             }
         )
     return "\ufeff" + output.getvalue()
@@ -638,6 +647,8 @@ class IndexSeries:
                     "latest_complete_date": dashboard["latest_complete_date"],
                     "latest": dashboard["selected"],
                     "panic_line": dashboard["panic_line"],
+                    "greed_line": dashboard["greed_line"],
+                    "valuation_signal": dashboard["valuation_signal"],
                     "csv": str(path),
                 }
                 report_path = self.output_dir / f"{spec.key}-index-series-{run_id}.json"

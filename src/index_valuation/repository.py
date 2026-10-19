@@ -56,7 +56,7 @@ def _upsert(connection, model, rows, key_columns):
     )
 
 
-def _restore_panic_line(line):
+def _restore_valuation_detail(line):
     """Restore the typed line without changing other stored detail fields."""
     if line is None:
         return None
@@ -71,10 +71,25 @@ def _restore_panic_line(line):
         "reference_points",
         "gap_pct",
         "pe",
+        "lower_pe",
+        "upper_pe",
     ):
         if result.get(key) is not None:
             result[key] = Decimal(str(result[key]))
     return result
+
+
+def _restore_index_point(row):
+    details = row["details"]
+    return {
+        **details,
+        **{
+            field: _restore_valuation_detail(details[field])
+            for field in ("panic_line", "greed_line", "valuation_signal")
+            if field in details
+        },
+        **{key: row[key] for key in ("trade_date", "price", "pe", "implied_eps", "calculated_at")},
+    }
 
 
 class Repository:
@@ -564,22 +579,40 @@ class Repository:
                 .mappings()
                 .all()
             )
-        return [
-            {
-                **row["details"],
-                **(
-                    {"panic_line": _restore_panic_line(row["details"]["panic_line"])}
-                    if "panic_line" in row["details"]
-                    else {}
-                ),
-                **{
-                    k: row[k] for k in ("trade_date", "price", "pe", "implied_eps", "calculated_at")
-                },
-            }
-            for row in rows
-        ]
+        return [_restore_index_point(row) for row in rows]
+
+    def latest_index_points(self, specs):
+        """Read the latest row of each current method, including explicit missing PE."""
+        from index_valuation.index_series import method_for
+
+        if isinstance(specs, Mapping):
+            specs = specs.values()
+        result = {}
+        with self.engine.connect() as connection:
+            for spec in specs:
+                row = (
+                    connection.execute(
+                        select(IndexSeriesRecord.__table__)
+                        .where(
+                            IndexSeriesRecord.index_key == spec.key,
+                            IndexSeriesRecord.method == method_for(spec),
+                        )
+                        .order_by(IndexSeriesRecord.trade_date.desc())
+                        .limit(1)
+                    )
+                    .mappings()
+                    .first()
+                )
+                result[spec.key] = _restore_index_point(row) if row else None
+        return result
 
     def panic_lines(self, specs, as_of: date | None = None):
+        return self._valuation_lines(specs, "panic_line", as_of)
+
+    def greed_lines(self, specs, as_of: date | None = None):
+        return self._valuation_lines(specs, "greed_line", as_of)
+
+    def _valuation_lines(self, specs, field, as_of):
         """Read each current method's latest stored line without loading its history."""
         from index_valuation.index_series import method_for
 
@@ -588,13 +621,13 @@ class Repository:
         result = {}
         with self.engine.connect() as connection:
             for spec in specs:
-                statement = select(IndexSeriesRecord.details["panic_line"]).where(
+                statement = select(IndexSeriesRecord.details[field]).where(
                     IndexSeriesRecord.index_key == spec.key,
                     IndexSeriesRecord.method == method_for(spec),
                 )
                 if as_of is not None:
                     statement = statement.where(IndexSeriesRecord.trade_date <= as_of)
-                result[spec.key] = _restore_panic_line(
+                result[spec.key] = _restore_valuation_detail(
                     connection.scalar(
                         statement.order_by(IndexSeriesRecord.trade_date.desc()).limit(1)
                     )

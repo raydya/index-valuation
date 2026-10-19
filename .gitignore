@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+tiger_openapi_config.properties
+tiger_openapi_token.properties
 .venv/
 .cache/
 .pytest_cache/

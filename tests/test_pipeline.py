@@ -502,6 +502,12 @@ def test_panic_line_jsonb_restores_precise_values_and_dates(repository):
     assert isinstance(stored[-1]["panic_line"]["threshold_pe"], Decimal)
     assert isinstance(stored[-1]["panic_line"]["history_end"], date)
     assert repository.panic_lines({spec.key: spec}) == {spec.key: points[-1]["panic_line"]}
+    assert stored[-1]["greed_line"] == points[-1]["greed_line"]
+    assert stored[-1]["valuation_signal"] == points[-1]["valuation_signal"]
+    assert isinstance(stored[-1]["greed_line"]["threshold_pe"], Decimal)
+    assert isinstance(stored[-1]["valuation_signal"]["lower_pe"], Decimal)
+    assert repository.greed_lines({spec.key: spec}) == {spec.key: points[-1]["greed_line"]}
+    assert repository.latest_index_points({spec.key: spec})[spec.key] == stored[-1]
 
 
 def test_panic_line_lookup_uses_current_method_latest_row_and_as_of(repository):
@@ -570,11 +576,15 @@ def test_index_refresh_recomputes_panic_lines_after_same_day_source_revision(rep
     job = IndexSeries(repository, tmp_path)
     first = job.refresh(spec)
     assert first["latest"]["panic_line"]["threshold_pe"] == Decimal(11)
+    assert first["latest"]["greed_line"]["threshold_pe"] == Decimal(19)
+    assert first["latest"]["valuation_signal"]["signal"] == "greed"
 
     repository.save_source_valuations(run, [valuation(days[0], 40)])
     second = job.refresh(spec)
     assert second["latest"]["panic_line"]["threshold_pe"] == Decimal(22)
     assert second["latest"]["panic_line"]["as_of"] == days[-1]
+    assert second["latest"]["greed_line"]["threshold_pe"] == Decimal(38)
+    assert second["latest"]["valuation_signal"]["signal"] == "normal"
     assert first["run_id"] != second["run_id"]
 
     # Revising the current PE changes its horizontal point level, not its past-only P10.
@@ -587,6 +597,64 @@ def test_index_refresh_recomputes_panic_lines_after_same_day_source_revision(rep
     assert repository.panic_lines([spec])[spec.key] == latest_line
     assert repository.index_series(spec.key, method_for(spec))[-1]["panic_line"] == latest_line
     assert count(repository, IndexSeriesRecord) == 3
+    assert third["latest"]["greed_line"]["threshold_pe"] == Decimal(38)
+    assert third["latest"]["valuation_signal"]["signal"] == "greed"
+    assert (
+        repository.latest_index_points([spec])[spec.key]["valuation_signal"]
+        == (third["latest"]["valuation_signal"])
+    )
+
+
+def test_market_overview_reads_current_latest_method_without_reusing_earlier_pe(repository):
+    from fastapi.testclient import TestClient
+
+    from index_valuation.index_series import method_for
+    from index_valuation.panic_lines import enrich_panic_lines
+    from index_valuation.webapp import create_app
+
+    spec = replace(SPEC, band_min_observations=2)
+    missing = replace(spec, key="no_stored_series")
+    repository.ensure_index(spec)
+    run = repository.start_run(spec, DAY)
+    points = enrich_panic_lines(
+        spec,
+        [
+            {
+                "trade_date": day,
+                "price": Decimal(1000),
+                "pe": Decimal(value) if value is not None else None,
+                "implied_eps": Decimal(50) if value is not None else None,
+                "pe_source": "futu",
+                "pe_basis": "futu_valuation_pe",
+                "pe_usable": True,
+                "phase": "published",
+            }
+            for day, value in (
+                (date(2019, 1, 1), "10"),
+                (date(2020, 1, 1), "20"),
+                (date(2024, 1, 1), "30"),
+                (date(2024, 1, 2), None),
+            )
+        ],
+    )
+    repository.save_index_series(spec, method_for(spec), run, points)
+    repository.save_index_series(
+        spec,
+        "old_method",
+        run,
+        [{**points[-2], "trade_date": date(2024, 1, 3)}],
+    )
+    latest = repository.latest_index_points([spec, missing])
+    assert latest[spec.key]["trade_date"] == date(2024, 1, 2)
+    assert latest[spec.key]["pe"] is None
+    assert latest[missing.key] is None
+    with TestClient(create_app(repository=repository, specs={spec.key: spec})) as client:
+        data = client.get("/api/market-overview").json()
+        assert data["items"][0]["as_of"] == "2024-01-02"
+        assert data["items"][0]["signal"] == "unknown"
+        assert data["items"][0]["status"] == "missing_pe"
+        assert data["items"][0]["pe"] is None
+        assert data["items"][0]["upper_pe"] == "29.0"
 
 
 def test_official_priority_rebuild_preserves_legacy_method_and_exports(repository, tmp_path):

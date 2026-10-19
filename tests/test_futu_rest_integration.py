@@ -242,7 +242,11 @@ def test_paused_collection_is_explicit_in_index_list_and_archived_dashboard():
         "pe_proxy_symbol": "VTI",
         "pe_comparison_status": "missing",
     }
-    repo = SimpleNamespace(index_series=lambda *_: [point], panic_lines=lambda *_, **__: {})
+    repo = SimpleNamespace(
+        index_series=lambda *_: [point],
+        panic_lines=lambda *_, **__: {},
+        greed_lines=lambda *_, **__: {},
+    )
     with TestClient(create_app(repository=repo, specs={spec.key: spec})) as client:
         listed = client.get("/api/indices").json()[0]
         data = client.get("/api/indices/ustotal/dashboard").json()

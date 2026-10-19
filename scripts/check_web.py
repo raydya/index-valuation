@@ -34,22 +34,30 @@ async def check_price_return(page, data):
 
 
 async def check_panic_line(page, data, mode="fixed"):
-    summary = data["panic_line"]
+    for kind, label, color in (
+        ("panic", "恐慌", "rgb(24, 135, 91)"),
+        ("greed", "贪婪", "rgb(196, 67, 54)"),
+    ):
+        await check_valuation_line(page, data, mode, kind, label, color)
+
+
+async def check_valuation_line(page, data, mode, kind, label, color):
+    summary = data[f"{kind}_line"]
     value = None
     if summary and summary["status"] == "reference":
         value = summary["threshold_pe"] if mode == "pe" else summary["reference_points"]
-    line = page.locator("#panic-line")
+    line = page.locator(f"#{kind}-line")
     if value is None:
         await expect(line).to_have_count(0)
         return
     # A horizontal SVG line has a zero-height geometric bounding box even
     # though its stroke is painted; verify attachment, paint and its label.
     await expect(line).to_have_count(1)
-    await expect(page.locator("#panic-line-label")).to_be_visible()
+    await expect(page.locator(f"#{kind}-line-label")).to_be_visible()
     assert math.isclose(float(await line.get_attribute("data-value")), float(value), rel_tol=1e-12)
     geometry = await line.evaluate("""line => {
         const box = line.ownerSVGElement.viewBox.baseVal;
-        const label = document.getElementById('panic-line-label').getBBox();
+        const label = document.getElementById(`${line.id}-label`).getBBox();
         const style = getComputedStyle(line);
         return {x1: line.x1.baseVal.value, x2: line.x2.baseVal.value,
             y1: line.y1.baseVal.value, y2: line.y2.baseVal.value,
@@ -58,20 +66,20 @@ async def check_panic_line(page, data, mode="fixed"):
             strokeWidth: parseFloat(style.strokeWidth), display: style.display,
             visibility: style.visibility, opacity: parseFloat(style.opacity)};
     }""")
-    assert geometry["y1"] == geometry["y2"], "Panic reference must be horizontal"
-    assert geometry["stroke"] != "none" and geometry["strokeWidth"] > 0
+    assert geometry["y1"] == geometry["y2"], f"{kind} reference must be horizontal"
+    assert geometry["stroke"] == color and geometry["strokeWidth"] > 0
     assert geometry["display"] != "none" and geometry["visibility"] == "visible"
     assert geometry["opacity"] > 0
     assert 24 <= geometry["y1"] <= geometry["height"] - 43
     assert geometry["x1"] > 0 and geometry["x2"] > geometry["width"] * 0.9
     assert geometry["labelLeft"] >= 0 and geometry["labelRight"] <= geometry["width"]
-    await expect(page.locator("#panic-line-label")).to_contain_text(
+    await expect(page.locator(f"#{kind}-line-label")).to_contain_text(
         f"{display(summary['threshold_pe'])}×"
     )
     if mode != "pe":
-        await expect(page.locator("#panic-line-label")).to_contain_text(f"{display(value)}点")
+        await expect(page.locator(f"#{kind}-line-label")).to_contain_text(f"{display(value)}点")
         await expect(page.locator("#chart-caption")).to_contain_text(data["selected"]["trade_date"])
-    await expect(page.locator("#legend")).to_contain_text("恐慌估值线")
+    await expect(page.locator("#legend")).to_contain_text(f"{label}估值线")
 
 
 async def check_live_panic_summary(page, data):
@@ -87,6 +95,17 @@ async def check_live_panic_summary(page, data):
     await expect(page.locator("#panic-live-section")).to_contain_text("每次估值更新自动重算")
     if summary and summary.get("history_end"):
         assert summary["history_end"] < summary["as_of"]
+    greed = data["greed_line"]
+    greed_threshold = greed.get("threshold_pe") if greed else None
+    await expect(page.locator("#greed-live-threshold")).to_have_text(
+        "暂不设定" if greed_threshold is None else f"{display(greed_threshold)}×"
+    )
+    await expect(page.locator("#greed-live-points")).to_have_text(
+        display(greed.get("reference_points") if greed else None)
+    )
+    if summary and greed and summary.get("history_end"):
+        for key in ("as_of", "history_start", "history_end", "history_count", "method", "basis"):
+            assert greed[key] == summary[key]
     await page.locator("#panic-live-overview summary").click()
     await expect(page.locator("#panic-live-overview-rows tr")).to_have_count(
         len(data["panic_overview"])
@@ -320,6 +339,11 @@ async def check_additional_indices(page, dashboards):
             assert rows[-1]["panic_threshold_pe"] == (panic.get("threshold_pe") or "")
             assert rows[-1]["panic_reference_points"] == (panic.get("reference_points") or "")
             assert rows[-1]["panic_status"] == panic["status"]
+        greed = data["greed_line"]
+        if greed:
+            assert rows[-1]["greed_threshold_pe"] == (greed.get("threshold_pe") or "")
+            assert rows[-1]["greed_reference_points"] == (greed.get("reference_points") or "")
+            assert rows[-1]["greed_status"] == greed["status"]
         if proxy:
             assert rows[-1]["pe_proxy_symbol"] == proxy
             assert rows[-1]["pe_date_basis"] == selected["pe_date_basis"]
@@ -537,6 +561,8 @@ async def main():
                     "rolling_panic_all_indices_overview_and_same_method",
                     "rolling_panic_rest_lines_and_historical_no_lookahead",
                     "rolling_panic_csv_and_window_independence",
+                    "panic_green_and_greed_red_horizontal_lines_all_modes_and_mobile",
+                    "greed_same_window_historical_values_and_csv",
                 ],
             }
             (OUTPUT / "web-validation.json").write_text(

@@ -48,6 +48,13 @@ class StoredSeries:
         eligible = [row for row in self.rows if not as_of or row["trade_date"] <= as_of]
         return {SPEC.key: eligible[-1]["panic_line"]} if eligible else {}
 
+    def greed_lines(self, specs, as_of=None):
+        eligible = [row for row in self.rows if not as_of or row["trade_date"] <= as_of]
+        return {SPEC.key: eligible[-1]["greed_line"]} if eligible else {}
+
+    def latest_index_points(self, specs):
+        return {SPEC.key: self.rows[-1]}
+
 
 def test_live_line_is_dated_window_independent_and_exported_with_full_precision():
     repo = StoredSeries()
@@ -63,6 +70,11 @@ def test_live_line_is_dated_window_independent_and_exported_with_full_precision(
             assert line["as_of"] == "2024-01-01"
             assert Decimal(line["threshold_pe"]) == Decimal("11")
             assert line == data["selected"]["panic_line"]
+            assert data["greed_line"] == data["selected"]["greed_line"]
+            assert data["greed_line"]["threshold_pe"] == "19.0"
+            assert data["greed_line"]["version"] == "rolling_pe_p90_v1"
+            assert data["greed_line"]["quantile"] == "0.9"
+            assert data["greed_line"] == data["greed_overview"][0]["line"]
             assert data["panic_overview"][0]["line"] == line
             assert data["panic_reference"]["record"] is None
         assert lines[0] == lines[1] == lines[2]
@@ -73,6 +85,10 @@ def test_live_line_is_dated_window_independent_and_exported_with_full_precision(
         assert rows[-1]["panic_reference_points"] == lines[0]["reference_points"]
         assert rows[-1]["panic_history_end"] == "2020-01-01"
         assert rows[-1]["panic_version"] == "rolling_pe_p10_v1"
+        assert rows[-1]["greed_version"] == "rolling_pe_p90_v1"
+        assert rows[-1]["greed_threshold_pe"] == "19.0"
+        assert rows[-1]["greed_reference_points"] == "1900.0"
+        assert rows[0]["greed_threshold_pe"] == ""
         assert rows[0]["panic_threshold_pe"] == ""
 
 
@@ -99,11 +115,15 @@ def test_paused_or_unrebuilt_index_has_no_live_threshold():
         assert data["panic_line"]["status"] == "collection_paused"
         assert data["panic_overview"][0]["line"]["status"] == "collection_paused"
         assert data["panic_line"].get("threshold_pe") is None
+        assert data["greed_line"]["status"] == "collection_paused"
+        assert data["greed_overview"][0]["line"]["status"] == "collection_paused"
         response = client.get("/api/indices/test/export.csv")
         rows = list(csv.DictReader(StringIO(response.text.lstrip("\ufeff"))))
         assert rows[-1]["panic_status"] == "collection_paused"
         assert rows[-1]["panic_threshold_pe"] == ""
         assert rows[-1]["panic_reference_points"] == ""
+        assert rows[-1]["greed_threshold_pe"] == ""
+        assert rows[-1]["greed_reference_points"] == ""
     repo.rows = [{k: v for k, v in row.items() if k != "panic_line"} for row in repo.rows]
     repo.panic_lines = lambda specs, as_of=None: {}
     with TestClient(create_app(repository=repo, specs={SPEC.key: SPEC})) as client:

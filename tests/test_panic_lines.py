@@ -59,6 +59,9 @@ def test_past_only_decimal_threshold_and_inputs_remain_unchanged():
     future = enrich_panic_lines(SPEC, revised + [point(date(2025, 1, 1), "9999")])
     assert future[-2]["panic_line"]["threshold_pe"] == line["threshold_pe"]
     assert future[-2]["panic_line"]["history_count"] == line["history_count"]
+    assert result[-1]["greed_line"]["threshold_pe"] == Decimal("19")
+    assert future[-2]["greed_line"]["threshold_pe"] == Decimal("19")
+    assert result[-1]["greed_line"]["reference_points"] == Decimal("3800")
 
 
 def test_window_boundary_is_inclusive_and_full_span_is_required():
@@ -185,6 +188,7 @@ def test_weekly_sampling_uses_last_usable_observation_of_completed_weeks():
     assert line["history_start"] == date(2024, 1, 4)
     assert line["history_end"] == date(2024, 1, 11)
     assert line["threshold_pe"] == Decimal("22")
+    assert enrich_panic_lines(spec, rows)[-1]["greed_line"]["threshold_pe"] == Decimal("38")
 
 
 def test_futu_rest_uses_index_pe_and_does_not_mix_old_proxy_values():
