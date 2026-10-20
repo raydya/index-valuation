@@ -1,0 +1,15 @@
+# Allowlist the complete build context. Local credentials and data never enter it.
+**
+!Dockerfile
+!.dockerignore
+!pyproject.toml
+!uv.lock
+!README.md
+!indices.toml
+!alembic.ini
+!src/
+!src/**
+!migrations/
+!migrations/**
+**/__pycache__/
+**/*.pyc

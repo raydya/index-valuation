@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     source_timeout: int = Field(default=20, ge=1, le=60)
     indices_file: Path = Path("indices.toml")
     data_dir: Path = Path("data")
+    migrations_dir: Path = Path("migrations")
+    scheduled_tasks_root: Path | None = None
+    scheduled_tasks_snapshot: Path | None = None
 
     @property
     def database_url(self) -> URL:

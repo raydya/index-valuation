@@ -4,6 +4,7 @@ import asyncio
 import csv
 import json
 import math
+import os
 from pathlib import Path
 
 import httpx
@@ -11,11 +12,23 @@ from playwright.async_api import async_playwright, expect
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "data/exports"
-URL = "http://127.0.0.1:8000"
+URL = os.environ.get("WEB_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 
 
 def display(value, digits=2):
     return "—" if value is None else f"{float(value):,.{digits}f}"
+
+
+async def check_fixed_band_table(page, data):
+    """Configured multiples stay visible when the selected day has no usable EPS."""
+    multiples = sorted(data["index"]["band_multiples"], key=float)
+    rows = page.locator("#band-rows tr")
+    await expect(rows).to_have_count(len(multiples) + 1)
+    for index, multiple in enumerate(multiples):
+        key = f"{float(multiple):g}"
+        cells = rows.nth(index).locator("td")
+        await expect(cells.nth(0)).to_have_text(f"{key}×")
+        await expect(cells.nth(1)).to_have_text(display(data["selected"]["fixed"].get(key)))
 
 
 async def check_price_return(page, data):
@@ -297,7 +310,7 @@ async def check_additional_indices(page, dashboards):
             if selected.get("price_usable") and selected["price_status"] == "unverified":
                 await expect(page.locator("#quality-note")).to_contain_text("采用官方点位")
         await expect(page.locator(".mean-row")).to_contain_text(display(selected["mean_points"]))
-        await expect(page.locator("#band-rows tr")).to_have_count(len(index["band_multiples"]) + 1)
+        await check_fixed_band_table(page, data)
         if selected["history_span_short"]:
             await expect(page.locator("#band-footnote")).to_contain_text("历史不足5年")
         await page.locator("[data-mode=quantile]").click()
@@ -451,14 +464,12 @@ async def main():
             await research_download.save_as(research_path)
             downloaded = json.loads(research_path.read_text())
             assert downloaded["indices"]["csi300"] == data["panic_reference"]["record"]
-            await expect(page.locator("#band-rows tr")).to_have_count(
-                len(data["selected"]["fixed"]) + 1
-            )
+            await check_fixed_band_table(page, data)
             await expect(page.locator("#mean-summary")).to_have_text(
                 f"近5年平均 {float(data['selected']['mean_pe']):,.2f}×"
             )
             await expect(page.locator(".mean-row")).to_contain_text(
-                f"{float(data['selected']['mean_points']):,.2f}"
+                display(data["selected"]["mean_points"])
             )
             await expect(page.locator("#mean-line")).to_have_attribute("stroke-dasharray", "6 4")
             assert await page.locator("#mean-line").get_attribute("d")
@@ -547,7 +558,7 @@ async def main():
             assert "band_15x" in rows[-1]
             assert rows[-1]["pe_source"] == "futu"
             assert rows[-1]["mean_pe"] == data["selected"]["mean_pe"]
-            assert rows[-1]["mean_points"] == data["selected"]["mean_points"]
+            assert rows[-1]["mean_points"] == (data["selected"]["mean_points"] or "")
             assert rows[-1]["history_years"] == "5"
             assert rows[-1]["basis_status"] == "unconfirmed"
             await page.mouse.move(2, 2)
@@ -558,9 +569,7 @@ async def main():
             )
             await page.screenshot(path=OUTPUT / "web-mobile.png", full_page=True)
             assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
-            await expect(page.locator("#band-rows tr")).to_have_count(
-                len(data["selected"]["fixed"]) + 1
-            )
+            await check_fixed_band_table(page, data)
             await page.locator("#method-details summary").click()
             await expect(page.locator("#basis-note")).to_be_visible()
             additional_indices = await check_additional_indices(page, extra)

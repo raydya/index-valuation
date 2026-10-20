@@ -8,7 +8,10 @@ import json
 import os
 import plistlib
 import re
+import stat
 import subprocess
+import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -20,6 +23,8 @@ ROOT = Path(__file__).resolve().parents[2]
 MAX_RECEIPT = 128 * 1024
 MAX_LOG = 2 * 1024 * 1024
 MAX_TEXT = 24_000
+MAX_SCHEDULER_SNAPSHOT = 64 * 1024
+SCHEDULER_SNAPSHOT_SCHEMA = "index_valuation_host_schedules_v1"
 
 
 @dataclass(frozen=True)
@@ -284,19 +289,76 @@ def _legacy_reports(content):
     return batches[-1] if batches else []
 
 
+def write_scheduler_snapshot(path, payload):
+    """Publish metadata atomically; neither credentials nor task results belong here."""
+    raw = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    if len(raw) > MAX_SCHEDULER_SNAPSHOT:
+        raise ValueError("调度快照超过大小上限")
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent, prefix=".host-status-", delete=False
+        ) as f:
+            temporary = Path(f.name)
+            # This contains only allowlisted schedule metadata and is readable by
+            # the unprivileged container user through a read-only bind mount.
+            os.fchmod(f.fileno(), 0o644)
+            f.write(raw)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _read_scheduler_snapshot(path):
+    """Reject symlinks, devices, FIFOs and unbounded input before parsing JSON."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_SCHEDULER_SNAPSHOT:
+            raise ValueError("调度快照不是有效的小型普通文件")
+        raw = stream.read(MAX_SCHEDULER_SNAPSHOT + 1)
+    if len(raw) > MAX_SCHEDULER_SNAPSHOT:
+        raise ValueError("调度快照超过大小上限")
+    return json.loads(raw)
+
+
 class ScheduledTasks:
-    def __init__(self, repository, specs, *, root=ROOT, home=None, now=None, launchctl=None):
+    def __init__(
+        self,
+        repository,
+        specs,
+        *,
+        root=ROOT,
+        home=None,
+        now=None,
+        launchctl=None,
+        snapshot_file=None,
+        snapshot_max_age_seconds=180,
+    ):
         self.repository = repository
         self.specs = specs
-        self.root = Path(root).resolve()
+        self.root = Path(root if root is not None else ROOT).resolve()
         self.home = Path(home) if home is not None else Path.home()
         self.now = now or (lambda: datetime.now(ZONE))
         self.launchctl = launchctl or _launchctl
+        self.local_scheduler_available = sys.platform == "darwin" or launchctl is not None
+        self.snapshot_file = Path(snapshot_file) if snapshot_file is not None else None
+        if not isinstance(snapshot_max_age_seconds, int) or snapshot_max_age_seconds <= 0:
+            raise ValueError("调度快照有效期必须为正整数秒")
+        self.snapshot_max_age_seconds = snapshot_max_age_seconds
 
     def _scheduler(self, task, now, warnings):
         base = self.home / "Library/LaunchAgents"
         path = base / f"{task.label}.plist"
         scheduler = {"state": "unknown", "label": task.label, "last_exit_code": None, "runs": None}
+        if not self.local_scheduler_available:
+            warnings.append("当前系统无法查询 macOS 调度；请配置宿主调度快照")
+            return scheduler, "调度时间未知", None
         payload = None
         try:
             raw = _read(path, base, 64 * 1024)
@@ -358,6 +420,111 @@ class ScheduledTasks:
             scheduled += timedelta(days=1)
         next_run = scheduled.isoformat() if scheduler["state"] in {"enabled", "running"} else None
         return scheduler, f"每天 {hour:02d}:{minute:02d}（北京时间，含周末）", next_run
+
+    def scheduler_metadata(self):
+        """Export only host scheduler metadata; never query the DB or read receipts."""
+        now = self.now().astimezone(ZONE)
+        tasks = []
+        for task in TASKS:
+            warnings = []
+            scheduler, schedule_text, next_run = self._scheduler(task, now, warnings)
+            tasks.append(
+                {
+                    "id": task.id,
+                    "scheduler": scheduler,
+                    "schedule_text": schedule_text,
+                    "next_run_at": next_run,
+                    "warnings": warnings,
+                }
+            )
+        return {
+            "schema": SCHEDULER_SNAPSHOT_SCHEMA,
+            "checked_at": now.isoformat(),
+            "timezone": "Asia/Shanghai",
+            "tasks": tasks,
+        }
+
+    def _load_host_metadata(self, now):
+        try:
+            payload = _read_scheduler_snapshot(self.snapshot_file)
+            if (
+                not isinstance(payload, dict)
+                or payload.get("schema") != SCHEDULER_SNAPSHOT_SCHEMA
+                or payload.get("timezone") != "Asia/Shanghai"
+            ):
+                raise ValueError("invalid schema")
+            checked = _datetime(payload.get("checked_at"))
+            if checked is None:
+                raise ValueError("invalid timestamp")
+            rows = payload.get("tasks")
+            if (
+                not isinstance(rows, list)
+                or len(rows) != len(TASKS)
+                or any(
+                    not isinstance(row, dict) or not isinstance(row.get("id"), str) for row in rows
+                )
+                or {row["id"] for row in rows} != {task.id for task in TASKS}
+            ):
+                raise ValueError("invalid task identities")
+            if checked > now:
+                return payload, "宿主调度快照时间在未来，当前调度状态未知"
+            if (now - checked).total_seconds() > self.snapshot_max_age_seconds:
+                return payload, "宿主调度快照已过期，当前调度状态未知"
+            return payload, None
+        except FileNotFoundError:
+            return None, "宿主调度快照尚未生成，当前调度状态未知"
+        except (OSError, ValueError, TypeError, RecursionError):
+            return None, "宿主调度快照无法读取或格式无效，当前调度状态未知"
+
+    def _host_scheduler(self, task, now, payload, error, warnings):
+        scheduler = {
+            "state": "unknown",
+            "label": task.label,
+            "last_exit_code": None,
+            "runs": None,
+            "checked_at": _iso(payload.get("checked_at")) if payload else None,
+            "source": "host_snapshot",
+        }
+        if error:
+            warnings.append(error + "；已保存执行回执仍可查看")
+            return scheduler, "调度时间未知", None
+        try:
+            row = next(row for row in payload["tasks"] if row["id"] == task.id)
+            data = row["scheduler"]
+            if (
+                not isinstance(data, dict)
+                or data.get("label") != task.label
+                or data.get("state")
+                not in {"unknown", "enabled", "running", "disabled", "not_installed"}
+                or any(
+                    data.get(field) is not None and _integer(data.get(field)) is None
+                    for field in ("runs", "last_exit_code")
+                )
+                or (data.get("runs") is not None and data["runs"] < 0)
+                or not isinstance(row.get("schedule_text"), str)
+                or not isinstance(row.get("warnings"), list)
+                or any(not isinstance(value, str) for value in row["warnings"])
+            ):
+                raise ValueError("invalid scheduler fields")
+            next_run = _datetime(row.get("next_run_at"))
+            if row.get("next_run_at") is not None and next_run is None:
+                raise ValueError("invalid next occurrence")
+            if next_run is not None:
+                checked = _datetime(payload["checked_at"])
+                if data["state"] not in {
+                    "enabled",
+                    "running",
+                } or not checked < next_run <= checked + timedelta(days=1):
+                    raise ValueError("invalid next occurrence")
+                # A still-fresh snapshot can cross today's scheduled minute.
+                if next_run <= now:
+                    next_run += timedelta(days=1)
+            scheduler.update({key: data.get(key) for key in ("state", "last_exit_code", "runs")})
+            warnings.extend(_strings(row["warnings"]))
+            return scheduler, _text(row["schedule_text"], 300), _iso(next_run)
+        except (KeyError, ValueError, TypeError, StopIteration):
+            warnings.append("宿主快照中的本任务身份或字段无效；已保存执行回执仍可查看")
+            return scheduler, "调度时间未知", None
 
     def _index_run(self, task, scheduler, warnings, database_ok):
         key = "asia" if task.id == "index_asia" else "us"
@@ -617,6 +784,9 @@ class ScheduledTasks:
     def snapshot(self):
         now = self.now().astimezone(ZONE)
         warnings = []
+        host_metadata, metadata_error = (
+            self._load_host_metadata(now) if self.snapshot_file is not None else (None, None)
+        )
         try:
             summaries = self.repository.scheduled_index_summaries(self.specs)
             database_ok = True
@@ -627,7 +797,12 @@ class ScheduledTasks:
         for task in TASKS:
             task_warnings = []
             try:
-                scheduler, schedule_text, next_run = self._scheduler(task, now, task_warnings)
+                if self.snapshot_file is not None:
+                    scheduler, schedule_text, next_run = self._host_scheduler(
+                        task, now, host_metadata, metadata_error, task_warnings
+                    )
+                else:
+                    scheduler, schedule_text, next_run = self._scheduler(task, now, task_warnings)
             except Exception:
                 scheduler = {
                     "state": "unknown",
@@ -655,15 +830,40 @@ class ScheduledTasks:
                 # types. Do not let one damaged task hide the other four tasks.
                 run = _empty_run("unknown", "本任务执行证据格式无效或暂不可读")
                 task_warnings.append("未采用无效证据判断执行成功；其他任务仍可查看")
-            if scheduler["state"] == "running" and run["status"] not in {"running", "queued"}:
-                run = _empty_run("running", "调度进程正在运行，等待本次执行回执")
-            elif run["status"] == "running" and scheduler["state"] in {
+            scheduler_running = scheduler["state"] == "running" and run["status"] not in {
+                "running",
+                "queued",
+            }
+            scheduler_stopped = run["status"] == "running" and scheduler["state"] in {
                 "enabled",
                 "disabled",
                 "not_installed",
-            }:
-                run["status"] = "unknown"
-                run["summary"] = "任务已开始，但未发现运行进程或完成回执"
+            }
+            if scheduler_running or scheduler_stopped:
+                receipt_time = max(
+                    filter(
+                        None,
+                        (_datetime(run[key]) for key in ("started_at", "finished_at", "queued_at")),
+                    ),
+                    default=None,
+                )
+                checked = _datetime(scheduler.get("checked_at"))
+                # The host snapshot can still be fresh while a newer receipt has
+                # already arrived through the read-only data mount. Such a sample
+                # is not evidence that the newer execution stopped or is running.
+                newer_receipt = (
+                    self.snapshot_file is not None
+                    and checked is not None
+                    and receipt_time is not None
+                    and checked < receipt_time
+                )
+                if newer_receipt:
+                    task_warnings.append("调度状态采样早于最新执行回执；以更新的执行回执为准")
+                elif scheduler_running:
+                    run = _empty_run("running", "调度进程正在运行，等待本次执行回执")
+                else:
+                    run["status"] = "unknown"
+                    run["summary"] = "任务已开始，但未发现运行进程或完成回执"
             if run["queued_at"] and run["status"] == "queued":
                 minutes = int((now - _datetime(run["queued_at"])).total_seconds() / 60)
                 if minutes >= 60:

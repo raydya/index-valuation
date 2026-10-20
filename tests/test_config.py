@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -21,6 +23,22 @@ def test_environment_overrides_dotenv(tmp_path, monkeypatch):
     monkeypatch.setenv("POSTGRES_PORT", "55432")
 
     assert Settings(_env_file=dotenv).postgres_port == 55432
+
+
+def test_container_runtime_paths_are_explicit_and_optional(monkeypatch):
+    monkeypatch.setenv("POSTGRES_PASSWORD", "runtime-password")
+    host = Settings(_env_file=None)
+    assert host.scheduled_tasks_root is None
+    assert host.scheduled_tasks_snapshot is None
+    assert host.migrations_dir == Path("migrations")
+
+    monkeypatch.setenv("SCHEDULED_TASKS_ROOT", "/app")
+    monkeypatch.setenv("SCHEDULED_TASKS_SNAPSHOT", "/app/data/scheduler/host-status.json")
+    monkeypatch.setenv("MIGRATIONS_DIR", "/app/migrations")
+    container = Settings(_env_file=None)
+    assert container.scheduled_tasks_root == Path("/app")
+    assert container.scheduled_tasks_snapshot == Path("/app/data/scheduler/host-status.json")
+    assert container.migrations_dir == Path("/app/migrations")
 
 
 @pytest.mark.parametrize("password", [None, ""])

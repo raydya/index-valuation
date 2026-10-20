@@ -5,10 +5,13 @@ from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
 
+from alembic.script import ScriptDirectory
+from alembic.util.exc import CommandError
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import false, select, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from index_valuation.archive import json_text
@@ -17,6 +20,12 @@ from index_valuation.db import build_engine
 from index_valuation.domain import DataError
 from index_valuation.index_series import build_dashboard, method_for, series_csv
 from index_valuation.market_overview import build_market_overview
+from index_valuation.models import (
+    IndexRecord,
+    IndexSeriesRecord,
+    RunRecord,
+    TotalReturnObservation,
+)
 from index_valuation.panic_reference import load_panic_reference, panic_reference_for
 from index_valuation.registry import load_indices
 from index_valuation.repository import Repository
@@ -24,6 +33,22 @@ from index_valuation.scheduled_tasks import ScheduledTasks
 
 WEB = Path(__file__).with_name("web")
 log = logging.getLogger(__name__)
+
+
+def _database_ready(engine, expected_heads):
+    """Verify read permissions and schema without reading historical series."""
+    if engine is None or not expected_heads:
+        return False
+    with engine.connect() as connection:
+        # The probe cannot alter application data and bounds lock/query waits.
+        connection.execute(text("SET TRANSACTION READ ONLY"))
+        connection.execute(text("SET LOCAL statement_timeout = '3000ms'"))
+        actual_heads = set(connection.scalars(text("SELECT version_num FROM alembic_version")))
+        if actual_heads != expected_heads:
+            return False
+        for model in (IndexRecord, IndexSeriesRecord, RunRecord, TotalReturnObservation):
+            connection.execute(select(model.__table__).where(false()))
+    return True
 
 
 def create_app(*, repository=None, specs=None, settings=None, scheduled_tasks=None):
@@ -34,7 +59,23 @@ def create_app(*, repository=None, specs=None, settings=None, scheduled_tasks=No
         repository = Repository(engine)
     specs = specs if specs is not None else load_indices((settings or Settings()).indices_file)
     panic_reference = load_panic_reference()
-    scheduled_tasks = scheduled_tasks or ScheduledTasks(repository, specs)
+    scheduled_tasks = scheduled_tasks or ScheduledTasks(
+        repository,
+        specs,
+        root=settings.scheduled_tasks_root if settings else None,
+        snapshot_file=settings.scheduled_tasks_snapshot if settings else None,
+    )
+    readiness_engine = getattr(repository, "engine", None)
+    expected_heads = None
+    if readiness_engine is not None:
+        try:
+            expected_heads = set(
+                ScriptDirectory(
+                    str(settings.migrations_dir if settings else Path("migrations"))
+                ).get_heads()
+            )
+        except (CommandError, OSError):
+            log.warning("Web readiness unavailable: migration metadata is missing or invalid")
 
     @asynccontextmanager
     async def lifespan(app):
@@ -64,6 +105,26 @@ def create_app(*, repository=None, specs=None, settings=None, scheduled_tasks=No
     @app.get("/")
     def home():
         return FileResponse(WEB / "index.html")
+
+    @app.get("/healthz")
+    def health():
+        return {"status": "ok"}
+
+    @app.get("/readyz")
+    def ready():
+        try:
+            is_ready = _database_ready(readiness_engine, expected_heads)
+        except SQLAlchemyError:
+            # SQLAlchemy errors can contain connection or statement values.
+            log.warning("Web readiness unavailable: database check failed")
+            is_ready = False
+        if not is_ready:
+            return Response(
+                json_text({"status": "unavailable"}),
+                status_code=503,
+                media_type="application/json",
+            )
+        return {"status": "ready"}
 
     @app.get("/api/indices")
     def indices():

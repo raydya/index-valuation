@@ -73,8 +73,8 @@ uv run index-valuation backfill-index --index sp500
 uv run index-valuation backfill-index --index nasdaq100
 uv run index-valuation backfill-index --index ustotal
 
-# 打开本机网页：http://127.0.0.1:8000
-uv run index-valuation serve
+# Docker 网页：http://127.0.0.1:8000（首次部署见下面说明）
+make web-up
 
 # 日常增量更新：从最后已存日期回退14天采集，随后重新生成指数序列
 uv run index-valuation update-index --all
@@ -83,7 +83,9 @@ uv run index-valuation update-index --all
 uv run index-valuation build-index --index csi300
 ```
 
-也可用 `make backfill-index`、`make daily`、`make web`。网页支持指数切换、1/3/5/10年及全部区间、指定日期回看、3/5/10年及全部历史统计窗口、固定倍数 band（保留8倍，各指数可配置）、历史平均 PE 虚线、滚动分位 band、PE 走势、逐日数据和 CSV 导出。接口为只读，仅绑定 `127.0.0.1`。读网页不需要 OpenD 在线，但 PostgreSQL 必须可访问。
+也可用 `make backfill-index`、`make daily`。网页通过项目 Compose 部署，采集、OpenD、富途 REST Keychain 凭据及 Telegram 推送继续在 Mac 运行；首次部署、状态快照、升级和回退见 [Docker 部署说明](docs/docker-deployment.md)。`make web` 保留为宿主前台开发入口，需先释放同一端口。
+
+网页支持指数切换、1/3/5/10年及全部区间、指定日期回看、3/5/10年及全部历史统计窗口、固定倍数 band（保留8倍，各指数可配置）、历史平均 PE 虚线、滚动分位 band、PE 走势、逐日数据和 CSV 导出。接口为只读，仅向宿主 `127.0.0.1` 发布。读网页不需要 OpenD 在线，但 PostgreSQL 必须可访问。
 
 页面并列显示“价格年化”和“分红再投资年化”，跟随图表所选区间及历史日期，分别显示实际起止日期。前者不含分红，后者使用独立采集的**税前全收益指数**，不从当前股息率估算；缺少全收益历史时显示原因。两者均与 PE 统计窗口独立，区间不同会明确提示。计算、来源及质量规则见[年化收益说明](docs/direct-index-valuation.md#年化收益)，实际覆盖和限制见[分红再投资接入记录](docs/total-return-integration-2026-10-19.md)。
 
@@ -221,7 +223,7 @@ launchctl bootout gui/$(id -u)/cn.index-valuation.daily.asia
 launchctl bootout gui/$(id -u)/cn.index-valuation.daily.us
 ```
 
-Linux 可将 cron / systemd 调度时区设为 `Asia/Shanghai`，每天17:00调用项目 `.venv/bin/python scripts/run_scheduled.py --market CN HK`，每天09:00调用 `.venv/bin/python scripts/run_scheduled.py --market US`。
+后续 Linux 采集部署可用 cron / systemd，并将调度时区设为 `Asia/Shanghai`，对应入口仍是 `scripts/run_scheduled.py --market CN HK`（17:00）和 `--market US`（09:00）。**当前采集继续由 Mac 执行**：美股 REST 凭据依赖 macOS Keychain，完成可续期凭据存储改造前不能直接迁到 Linux；中港采集还需验证容器到 OpenD 的连接。网页容器迁移不改变这些调度。
 
 Google Sheets 的 `Index ERP` 表另有每天北京时间08:00的独立任务，通过已有 Codex 会话的 Google Drive 连接器更新指数盈利收益率和中美国债收益率。安装、日志和验证见 [表格定时同步说明](docs/google-sheets-erp-schedule.md)。
 
@@ -261,7 +263,7 @@ uv run python -m index_valuation check-db
 
 数据库生命周期和账号调整在 `../local-infra` 完成；更改 `.env` 不会自动修改数据库或密码。`make db-up` 只检查连接，`make db-down` 只提示维护位置，二者均不启停共享 PG。`INFRA_DIR` 可覆盖 Makefile 中的基础设施路径。备份由 infra 统一执行，另外还需备份本项目 `data/raw/` 和 `data/exports/`。
 
-`compose.yaml` 的旧单库服务仅作为 `legacy` profile 历史模板保留，日常不再使用。迁移验证完成后，旧容器、数据卷、迁移备份、原配置副本和回退镜像均已清理，不能直接恢复旧实例。后续数据库恢复应按 `../local-infra` 的日常备份恢复流程重建，并先停止写入、评估备份时间之后的数据。不要用当前共享连接配置直接启动历史模板。
+`compose.yaml` 只管理网页容器，通过 `local-infra-index-db` 外部网络访问共享 PG；不管理数据库容器或数据卷。旧数据库容器和旧卷已清理，不再保留 `legacy` 服务。网页回退使用旧应用镜像或宿主进程，仍连接当前共享库；数据库恢复由 infra 使用日常备份执行。两者的操作步骤见 [Docker 部署说明](docs/docker-deployment.md)。
 
 模型集中在 `models.py`，已由 `migrations/env.py` 导入。新增模型后生成并检查迁移：
 
@@ -278,7 +280,8 @@ src/index_valuation/   领域记录、来源 Adapter、校验、估值、存储�
 migrations/            数据库版本迁移
 scripts/               开发环境辅助脚本
 tests/                 配置测试和 PostgreSQL 集成测试
-compose.yaml           旧单库服务的 legacy 历史模板，原实例已清理
+Dockerfile             固定 Python 基础镜像、uv 锁定依赖的网页镜像
+compose.yaml           网页容器、只读回执挂载、共享数据库网络
 pyproject.toml         依赖和开发工具配置
 uv.lock                依赖锁文件
 indices.toml           指数配置，新增同类指数的入口

@@ -1,8 +1,9 @@
 import json
+import os
 import plistlib
 import subprocess
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -10,7 +11,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from index_valuation.domain import IndexSpec
-from index_valuation.scheduled_tasks import TASKS, ZONE, ScheduledTasks
+from index_valuation.scheduled_tasks import (
+    MAX_SCHEDULER_SNAPSHOT,
+    TASKS,
+    ZONE,
+    ScheduledTasks,
+    write_scheduler_snapshot,
+)
 from index_valuation.webapp import create_app
 
 NOW = datetime(2026, 10, 16, 16, 0, tzinfo=ZONE)
@@ -523,3 +530,193 @@ def test_valid_json_with_invalid_field_types_only_marks_affected_task_unknown(se
     }.items():
         if key != damaged:
             assert tasks[key]["last_run"]["status"] == expected
+
+
+def enable_snapshot(service, payload=None):
+    payload = service.scheduler_metadata() if payload is None else payload
+    path = service.root / "data/scheduler/host-status/status.json"
+    write_scheduler_snapshot(path, payload)
+    service.snapshot_file = path
+
+    def forbidden(_):
+        raise AssertionError("Container must never invoke launchctl")
+
+    service.launchctl = forbidden
+    return path
+
+
+def test_metadata_export_does_not_read_database_receipts_or_environment(service):
+    service.repository = None
+    queue = queued(service)
+    completed(service, queue, result_text="private-result-not-for-snapshot")
+    metadata = service.scheduler_metadata()
+    assert len(metadata["tasks"]) == 5
+    text = json.dumps(metadata)
+    assert "must-not-expose" not in text
+    assert "private-result-not-for-snapshot" not in text
+    assert "last_run" not in text
+    assert "data_items" not in text
+    assert "postgres" not in text
+
+
+def test_container_uses_fresh_host_snapshot_and_reads_live_receipts_and_database(service):
+    enable_snapshot(service)
+    queue = queued(service)
+    completed(service, queue)
+    service.repository.summaries = {
+        "us": {
+            "latest": {"trade_date": "2026-10-16", "implied_eps": 1},
+            "complete_date": "2026-10-16",
+        }
+    }
+    data = service.snapshot()
+    items = {item["id"]: item for item in data["tasks"]}
+    assert items["index_asia"]["next_run_at"] == "2026-10-16T17:00:00+08:00"
+    assert items["index_us"]["scheduler"]["state"] == "enabled"
+    assert items["index_us"]["scheduler"]["checked_at"] == NOW.isoformat()
+    assert items["index_us"]["scheduler"]["source"] == "host_snapshot"
+    assert items["index_us"]["data_items"][0]["date"] == "2026-10-16"
+    assert items["erp"]["last_run"]["status"] == "completed"
+    completed(service, queue, status="failed", exit_code=1)
+    assert task(service, "erp")["last_run"]["status"] == "failed"
+
+
+@pytest.mark.parametrize("age", [181, -1])
+def test_stale_or_future_snapshot_is_unknown_but_preserves_execution_evidence(service, age):
+    metadata = service.scheduler_metadata()
+    metadata["checked_at"] = (NOW - timedelta(seconds=age)).isoformat()
+    enable_snapshot(service, metadata)
+    queue = queued(service)
+    completed(service, queue)
+    items = {item["id"]: item for item in service.snapshot()["tasks"]}
+    assert all(item["scheduler"]["state"] == "unknown" for item in items.values())
+    assert all(item["next_run_at"] is None for item in items.values())
+    assert items["erp"]["last_run"]["status"] == "completed"
+    assert any(("过期" if age > 0 else "未来") in w for w in items["erp"]["warnings"])
+
+
+@pytest.mark.parametrize("damage", ["schema", "identity", "duplicate", "timestamp", "missing"])
+def test_missing_or_invalid_snapshot_never_falls_back_to_local_scheduler(service, damage):
+    metadata = service.scheduler_metadata()
+    if damage == "schema":
+        metadata["schema"] = "wrong-schema"
+    elif damage == "identity":
+        metadata["tasks"][0]["id"] = "unrelated-project"
+    elif damage == "duplicate":
+        metadata["tasks"][0] = metadata["tasks"][1]
+    elif damage == "timestamp":
+        metadata["checked_at"] = "2026-10-16T16:00:00"
+    path = enable_snapshot(service, metadata)
+    if damage == "missing":
+        path.unlink()
+    for item in service.snapshot()["tasks"]:
+        assert item["scheduler"]["state"] == "unknown"
+        assert item["next_run_at"] is None
+        assert item["warnings"]
+
+
+@pytest.mark.parametrize("damage", ["label", "runs", "state", "next_run"])
+def test_bad_snapshot_task_does_not_hide_other_tasks(service, damage):
+    metadata = service.scheduler_metadata()
+    row = next(row for row in metadata["tasks"] if row["id"] == "index_us")
+    if damage == "label":
+        row["scheduler"]["label"] = "cn.index-valuation.daily.asia"
+    elif damage == "runs":
+        row["scheduler"]["runs"] = True
+    elif damage == "state":
+        row["scheduler"]["state"] = ["enabled"]
+    else:
+        row["next_run_at"] = "2027-01-01T09:00:00+08:00"
+    enable_snapshot(service, metadata)
+    items = {item["id"]: item for item in service.snapshot()["tasks"]}
+    assert items["index_us"]["scheduler"]["state"] == "unknown"
+    assert items["index_asia"]["scheduler"]["state"] == "enabled"
+
+
+@pytest.mark.parametrize("damage", ["symlink", "oversize", "fifo"])
+def test_snapshot_reads_are_bounded_and_reject_special_files(service, tmp_path, damage):
+    path = enable_snapshot(service)
+    path.unlink()
+    if damage == "symlink":
+        outside = tmp_path / "outside.json"
+        outside.write_text('{"secret":"do-not-expose"}')
+        path.symlink_to(outside)
+    elif damage == "oversize":
+        path.write_bytes(b" " * (MAX_SCHEDULER_SNAPSHOT + 1))
+    else:
+        os.mkfifo(path)
+    data = service.snapshot()
+    assert all(item["scheduler"]["state"] == "unknown" for item in data["tasks"])
+    assert "do-not-expose" not in json.dumps(data)
+
+
+def test_fresh_snapshot_rolls_next_occurrence_forward_after_scheduled_minute(service):
+    service.now = lambda: NOW.replace(hour=16, minute=59, second=45)
+    enable_snapshot(service)
+    service.now = lambda: NOW.replace(hour=17, minute=0, second=30)
+    item = task(service, "index_asia")
+    assert item["scheduler"]["state"] == "enabled"
+    assert item["next_run_at"] == "2026-10-17T17:00:00+08:00"
+
+
+def test_linux_without_snapshot_never_invokes_launchctl(tmp_path, monkeypatch):
+    from index_valuation import scheduled_tasks
+
+    monkeypatch.setattr(scheduled_tasks.sys, "platform", "linux")
+    service = ScheduledTasks(ReadOnlyRepository(), {}, root=tmp_path, now=lambda: NOW)
+    service.launchctl = lambda _: pytest.fail("Linux must not invoke launchctl")
+    assert all(item["scheduler"]["state"] == "unknown" for item in service.snapshot()["tasks"])
+
+
+def test_snapshot_atomic_write_failure_preserves_previous_file(service, monkeypatch):
+    from index_valuation import scheduled_tasks
+
+    path = enable_snapshot(service)
+    original = path.read_bytes()
+
+    def fail(*_):
+        raise OSError("simulated failed replacement")
+
+    monkeypatch.setattr(scheduled_tasks.os, "replace", fail)
+    with pytest.raises(OSError):
+        write_scheduler_snapshot(path, {"different": True})
+    assert path.read_bytes() == original
+    assert not list(path.parent.glob(".host-status-*"))
+
+
+def test_running_snapshot_does_not_replace_a_newer_completed_receipt(service):
+    service.now = lambda: NOW.replace(hour=9)
+    service.launchctl = lambda _: SimpleNamespace(
+        returncode=0, stdout="state = running\n", stderr=""
+    )
+    enable_snapshot(service)
+    base = portfolio(
+        service,
+        started_at="2026-10-16T08:59:55+08:00",
+        finished_at="2026-10-16T09:00:10+08:00",
+    )
+    (base / "us.result.md").write_text("本次报价已更新")
+    service.now = lambda: NOW.replace(hour=9, second=20)
+    item = task(service, "portfolio_us")
+    assert item["scheduler"]["state"] == "running"
+    assert item["last_run"]["status"] == "finished"
+    assert item["last_run"]["finished_at"] == "2026-10-16T09:00:10+08:00"
+    assert any("采样早于" in warning for warning in item["warnings"])
+
+
+def test_enabled_snapshot_does_not_mark_a_newer_running_receipt_unknown(service):
+    service.now = lambda: NOW.replace(hour=9)
+    enable_snapshot(service)
+    portfolio(
+        service,
+        status="attempt_started",
+        started_at="2026-10-16T09:00:10+08:00",
+        finished_at=None,
+        exit_code=None,
+    )
+    service.now = lambda: NOW.replace(hour=9, second=20)
+    item = task(service, "portfolio_us")
+    assert item["scheduler"]["state"] == "enabled"
+    assert item["last_run"]["status"] == "running"
+    assert item["last_run"]["started_at"] == "2026-10-16T09:00:10+08:00"
+    assert any("采样早于" in warning for warning in item["warnings"])

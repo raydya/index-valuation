@@ -145,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     check.add_argument("--wait", type=int, default=0, metavar="SECONDS")
     commands.add_parser("list-indices", help="列出配置的指数")
     serve = commands.add_parser("serve", help="启动本机指数估值网页")
+    serve.add_argument("--host", default="127.0.0.1", help="监听地址；容器内使用 0.0.0.0")
     serve.add_argument("--port", type=int, default=8000)
     for command, help_text in (
         ("sync-constituents", "保存官方权重并核对富途成分列表"),
@@ -217,7 +218,7 @@ def main(argv: list[str] | None = None) -> int:
 
         from index_valuation.webapp import create_app
 
-        uvicorn.run(create_app(settings=settings), host="127.0.0.1", port=args.port)
+        uvicorn.run(create_app(settings=settings), host=args.host, port=args.port)
         return 0
     engine, rest_client, journal = None, None, None
     try:

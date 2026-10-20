@@ -5,7 +5,7 @@ COMPOSE ?= docker compose
 INFRA_DIR ?= ../local-infra
 BOOTSTRAP_PYTHON ?= python3
 
-.PHONY: help env install setup db-up db-down db-logs db-shell migrate db-check check test test-db constituents sources daily schedule web backfill-index components-daily
+.PHONY: help env install setup db-up db-down db-logs db-shell migrate db-check check test test-db constituents sources daily schedule web web-up web-down web-logs backfill-index components-daily
 
 help:
 	@echo "make setup     安装依赖、检查共享 PostgreSQL、迁移并检查连接"
@@ -21,7 +21,10 @@ help:
 	@echo "make sources   检查富途行情权限和独立核验源"
 	@echo "make daily     增量更新所有指数的点位、PE/PB/PS 和估值带"
 	@echo "make backfill-index 全量回填所有指数的可用历史数据"
-	@echo "make web       启动估值网页 http://127.0.0.1:8000"
+	@echo "make web       前台启动宿主开发网页（先停止同端口容器）"
+	@echo "make web-up    构建并启动 Docker 网页 http://127.0.0.1:8000"
+	@echo "make web-down  停止本项目 Docker 网页，不停止共享 PG 或采集"
+	@echo "make web-logs  查看 Docker 网页日志"
 	@echo "make components-daily 运行可选的成分股重算流程"
 	@echo "make schedule  生成 macOS 每日任务配置（安装见 README）"
 
@@ -85,6 +88,15 @@ backfill-index:
 
 web:
 	$(UV) run --locked index-valuation serve
+
+web-up:
+	$(COMPOSE) up -d --build --wait web
+
+web-down:
+	$(COMPOSE) stop web
+
+web-logs:
+	$(COMPOSE) logs --tail=100 web
 
 schedule:
 	$(UV) run --locked python scripts/install_schedule.py

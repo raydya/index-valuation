@@ -3,6 +3,7 @@
 import asyncio
 import copy
 import json
+import os
 from pathlib import Path
 
 import httpx
@@ -10,7 +11,7 @@ from playwright.async_api import async_playwright, expect
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "data/exports"
-URL = "http://127.0.0.1:8000"
+URL = os.environ.get("WEB_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 API = f"{URL}/api/scheduled-tasks"
 TASK_IDS = {"erp", "portfolio_us", "index_us", "index_asia", "portfolio_asia"}
 RUN_LABELS = {

@@ -3,6 +3,7 @@
 import asyncio
 import copy
 import json
+import os
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from playwright.async_api import async_playwright, expect
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "data/exports"
-URL = "http://127.0.0.1:8000"
+URL = os.environ.get("WEB_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 API = f"{URL}/api/market-overview"
 ACTIONS = {
     "panic": "恐慌，持续买入",
