@@ -17,43 +17,40 @@
 | 用途 | 工具 |
 | --- | --- |
 | 运行环境 | Python 3.12、uv、项目内 `.venv` |
-| 数据库 | PostgreSQL 17，Docker Compose 管理 |
+| 数据库 | PostgreSQL 17，由独立的 `../local-infra` Docker Compose 管理 |
 | 数据访问 | SQLAlchemy 2.0、Psycopg 3 |
 | 结构迁移 | Alembic |
 | 配置 | pydantic-settings，读取 `.env` 与环境变量 |
 | 网页 | FastAPI、Uvicorn、原生 JavaScript / SVG，无 CDN 依赖 |
 | 开发检查 | Ruff、pytest |
 
-依赖的确切版本保存在 `uv.lock`；日常安装使用 `uv sync --locked`。Python 小版本由 `.python-version` 固定，补丁版本可更新。PostgreSQL 镜像固定 17 主版本，允许更新该版本内的补丁。
+依赖的确切版本保存在 `uv.lock`；日常安装使用 `uv sync --locked`。Python 小版本由 `.python-version` 固定，补丁版本可更新。正式 PostgreSQL 的镜像版本、升级和数据卷由 `../local-infra` 统一管理。
 
 ## 首次启动
 
 前置条件：安装 [uv](https://docs.astral.sh/uv/getting-started/installation/) 和可用的 Docker Engine / Docker Desktop（含 Compose v2）。Docker 服务需处于运行状态。生成配置的脚本兼容系统 Python 3.9+；应用使用 Python 3.12，缺失时 uv 会自动安装。
 
+先按 `../local-infra` 的说明启动共享 PG，创建本应用专用的 `index_valuation` 数据库、运行账号 `index_valuation_runtime` 和迁移账号 `index_valuation_owner`。本项目不会自行启动或停止共享 PG。
+
 在项目根目录执行：
-
-```bash
-make setup
-```
-
-该命令会依次：
-
-1. 创建 `.env`，生成随机数据库密码；已有文件不会被覆盖。
-2. 根据锁文件创建 `.venv` 并安装应用和开发依赖。
-3. 启动 PostgreSQL 并等待 Python 能够连接。
-4. 应用 Alembic 迁移。
-5. 输出数据库连接信息，密码不会出现在输出中。
-
-默认连接地址为 `127.0.0.1:5433`，数据库和用户名均为 `index_valuation`。端口仅绑定本机，避免占用常见的 5432 端口。数据保存在 Compose 的 `postgres_data` 命名卷中。
-
-可以分步执行：
 
 ```bash
 make env
 make install
-make db-up
-make migrate
-make db-check
+# 在本机 .env 填入 infra 分配的 POSTGRES_PASSWORD 和 MIGRATION_DATABASE_URL。
+make setup
+```
+
+`make env` 创建权限为 600 的配置模板，保留已有文件；不会为已存在的共享数据库生成新密码。`make setup` 安装依赖，等待共享数据库连接，使用独立迁移账号应用 Alembic 迁移，最后检查运行账号连接。连接输出不包含密码。
+
+正式默认地址为 `127.0.0.1:15432`，数据库为 `index_valuation`，运行账号为 `index_valuation_runtime`。端口只绑定本机；正式数据卷、备份和恢复在 `../local-infra` 管理。独立库保留 UTF8 编码、`C.UTF-8` 排序规则和 UTC 时区。
+
+也可以分步执行：
+
+```bash
+make db-up       # 只等待连接，不控制容器生命周期
+make migrate     # 只使用 MIGRATION_DATABASE_URL
+make db-check    # 使用 POSTGRES_* 运行账号
 ```
 
 成功时 `make db-check` 输出 `"status": "ok"`，并显示数据库版本、UTF8 编码和 UTC 时区。迁移 `0001` 建立版本基线，`0002` 建立指数、证券、成分权重、每日观测、估值结果与运行记录表，`0003` 增加独立的数据商历史估值表，`0004` 增加个股历史 EPS/PE、来源核验及回填进度表。
@@ -236,27 +233,35 @@ Google Sheets 的 `Index ERP` 表另有每天北京时间08:00的独立任务，
 make help                       # 查看常用命令
 make check                      # 静态检查和格式检查
 make test                       # 无需数据库的配置测试
-make test-db                    # 真实 PostgreSQL 集成测试，需先 make setup
-make db-shell                   # 进入 psql
-make db-logs                    # 查看数据库日志
-make db-down                    # 停止并移除容器，保留数据卷
-make db-up                      # 再次启动，复用原有数据
+make test-db                    # 真实 PostgreSQL 集成测试，需独立 TEST_DATABASE_URL
+make db-shell                   # 使用运行账号进入本机 psql，需已安装客户端
+make db-logs                    # 查看 ../local-infra 的共享 PostgreSQL 日志
+make db-down                    # 仅提示基础设施维护位置，不停止服务
+make db-up                      # 等待共享 PostgreSQL 就绪，不启动容器
 
 uv run index-valuation --help
 uv run python -m index_valuation check-db
 ```
 
-集成测试检查迁移版本、数值精度、重复运行、多指数共享、校验失败和任务锁。流程测试使用独立临时 schema，结束后只删除该临时 schema。直接执行 `uv run pytest` 会同时运行配置和数据库测试。
+集成测试检查迁移版本、数值精度、重复运行、多指数共享、校验失败和任务锁。必须单独配置 `TEST_DATABASE_URL`，数据库名以 `_test` 结尾（例如 `index_valuation_test`），使用仅能访问该测试库的专用账号，建议运行在独立临时 PG 容器。测试会在该库自动执行 Alembic 迁移，并为流程测试创建、清理临时 schema。测试连接绝不回退到正式的 `POSTGRES_*` 或 `MIGRATION_DATABASE_URL`；带可覆盖目标数据库的 URL query 参数也会被拒绝。
+
+`make test-db` 缺少测试连接会直接报错；直接执行 `uv run pytest` 时，未配置测试连接的集成测试会跳过，其余测试照常执行。不要给正式运行账号增加建删 schema 的权限来通过测试。
 
 添加依赖用 `uv add <package>`，开发依赖用 `uv add --dev <package>`，并一起提交 `pyproject.toml` 和 `uv.lock`。编辑器选择 `.venv/bin/python` 作为解释器。uv 缓存放在项目 `.cache/uv`，便于隔离环境。
 
 ## 配置与迁移
 
-`.env.example` 是配置模板。`.env`、虚拟环境、缓存、本地数据和日志已被 Git 忽略。环境变量优先于 `.env`；应用和迁移使用相同配置，连接 URL 由字段构造，支持密码中的特殊字符。
+`.env.example` 是配置模板。`.env`、虚拟环境、缓存、本地数据和日志已被 Git 忽略。环境变量优先于 `.env`。
 
-已有 PostgreSQL 服务也可直接使用：运行 `make env`、`make install`，将 `.env` 的 `POSTGRES_*` 设置为该服务的专用开发数据库，然后运行 `make migrate` 和 `make db-check`。
+- 运行应用、网页、采集和 `make db-shell` 使用 `POSTGRES_*`，连接 URL 按字段构造，支持密码特殊字符。
+- Alembic 单独读取 `MIGRATION_DATABASE_URL`，未配置时明确失败，不回退到运行账号。URL 使用 `postgresql+psycopg://`；密码中的特殊字符需要百分号编码。运行应用的配置类不加载该迁移字段。
+- `TEST_DATABASE_URL` 只用于独立测试库，不能指向正式数据库。
 
-数据库初始化后，修改 `.env` 中的密码、用户名或数据库名不会自动修改卷内已有数据库。应先在数据库中进行相应变更，再同步配置。`docker compose down -v` 会删除数据卷，日常停止请使用 `make db-down`。
+共享实例上的运行账号应仅拥有本库的连接、schema 使用以及业务表和序列的必要权限，不具备超级用户、建库、建账号或迁移权限。对象归 `index_valuation_owner` 所有；基础设施应为该 owner 设置默认权限，确保新迁移创建的业务表和序列可被运行账号使用。
+
+数据库生命周期和账号调整在 `../local-infra` 完成；更改 `.env` 不会自动修改数据库或密码。`make db-up` 只检查连接，`make db-down` 只提示维护位置，二者均不启停共享 PG。`INFRA_DIR` 可覆盖 Makefile 中的基础设施路径。备份由 infra 统一执行，另外还需备份本项目 `data/raw/` 和 `data/exports/`。
+
+`compose.yaml` 的旧单库服务仅作为 `legacy` profile 历史模板保留，日常不再使用。迁移验证完成后，旧容器、数据卷、迁移备份、原配置副本和回退镜像均已清理，不能直接恢复旧实例。后续数据库恢复应按 `../local-infra` 的日常备份恢复流程重建，并先停止写入、评估备份时间之后的数据。不要用当前共享连接配置直接启动历史模板。
 
 模型集中在 `models.py`，已由 `migrations/env.py` 导入。新增模型后生成并检查迁移：
 
@@ -273,7 +278,7 @@ src/index_valuation/   领域记录、来源 Adapter、校验、估值、存储�
 migrations/            数据库版本迁移
 scripts/               开发环境辅助脚本
 tests/                 配置测试和 PostgreSQL 集成测试
-compose.yaml           本地 PostgreSQL 服务及持久化数据卷
+compose.yaml           旧单库服务的 legacy 历史模板，原实例已清理
 pyproject.toml         依赖和开发工具配置
 uv.lock                依赖锁文件
 indices.toml           指数配置，新增同类指数的入口

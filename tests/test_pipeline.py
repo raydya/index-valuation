@@ -6,8 +6,7 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import create_engine, func, select, text, update
 
-from index_valuation.config import Settings
-from index_valuation.db import Base, build_engine
+from index_valuation.db import Base
 from index_valuation.domain import (
     Constituent,
     DataError,
@@ -38,17 +37,16 @@ MEMBERS = (Constituent("SH.600001", "A", Decimal(60)), Constituent("SZ.000001", 
 
 
 @pytest.fixture
-def repository():
-    settings = Settings()
-    admin = build_engine(settings)
+def repository(test_database_url, test_database_engine):
+    admin = test_database_engine
     schema = "test_valuation_" + uuid4().hex
     with admin.begin() as connection:
         connection.execute(text(f'CREATE SCHEMA "{schema}"'))
     engine = create_engine(
-        settings.database_url,
+        test_database_url,
         connect_args={
             "options": f"-c search_path={schema} -c timezone=UTC",
-            "connect_timeout": settings.postgres_connect_timeout,
+            "connect_timeout": 5,
         },
     )
     try:
@@ -58,7 +56,6 @@ def repository():
         engine.dispose()
         with admin.begin() as connection:
             connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
-        admin.dispose()
 
 
 class FixedClock(datetime):

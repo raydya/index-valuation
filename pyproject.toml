@@ -45,7 +45,7 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
-markers = ["integration: requires the configured PostgreSQL development database"]
+markers = ["integration: requires an isolated TEST_DATABASE_URL database ending in _test"]
 
 [tool.uv]
 cache-dir = ".cache/uv"

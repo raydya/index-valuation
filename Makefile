@@ -2,20 +2,21 @@
 
 UV ?= uv
 COMPOSE ?= docker compose
+INFRA_DIR ?= ../local-infra
 BOOTSTRAP_PYTHON ?= python3
 
 .PHONY: help env install setup db-up db-down db-logs db-shell migrate db-check check test test-db constituents sources daily schedule web backfill-index components-daily
 
 help:
-	@echo "make setup     安装依赖、启动 PostgreSQL、迁移并检查连接"
+	@echo "make setup     安装依赖、检查共享 PostgreSQL、迁移并检查连接"
 	@echo "make install   根据 uv.lock 安装 Python 依赖"
-	@echo "make db-up     启动 PostgreSQL 并等待连接就绪"
-	@echo "make db-down   停止 PostgreSQL，保留数据卷"
+	@echo "make db-up     等待共享 PostgreSQL 连接（不启动容器）"
+	@echo "make db-down   查看共享 PostgreSQL 的维护位置（不停止服务）"
 	@echo "make migrate   将数据库迁移到最新版本"
 	@echo "make db-check  检查数据库连接"
 	@echo "make check     检查代码格式和静态规则"
 	@echo "make test      运行不依赖数据库的测试"
-	@echo "make test-db   运行 PostgreSQL 集成测试"
+	@echo "make test-db   运行独立 TEST_DATABASE_URL 的 PostgreSQL 集成测试"
 	@echo "make constituents 同步所有指数成分和权重"
 	@echo "make sources   检查富途行情权限和独立核验源"
 	@echo "make daily     增量更新所有指数的点位、PE/PB/PS 和估值带"
@@ -37,18 +38,18 @@ setup:
 	$(MAKE) migrate
 	$(MAKE) db-check
 
-db-up: env
-	$(COMPOSE) up -d db
+db-up:
+	@echo "共享 PostgreSQL 由 $(INFRA_DIR) 管理；此命令仅检查连接。"
 	$(UV) run --locked index-valuation check-db --wait 60
 
 db-down:
-	$(COMPOSE) down
+	@echo "未停止任何服务。共享 PostgreSQL 由 $(INFRA_DIR) 管理，维护会影响所有应用。"
 
 db-logs:
-	$(COMPOSE) logs --tail=100 db
+	cd "$(INFRA_DIR)" && $(COMPOSE) logs --tail=100 postgres
 
 db-shell:
-	$(COMPOSE) exec db sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'
+	$(UV) run --locked python scripts/db_shell.py
 
 migrate:
 	$(UV) run --locked alembic upgrade head
@@ -64,6 +65,7 @@ test:
 	$(UV) run --locked pytest -m "not integration"
 
 test-db:
+	$(UV) run --locked python -c 'from index_valuation.config import IntegrationSettings; IntegrationSettings().database_url'
 	$(UV) run --locked pytest -m integration
 
 constituents:

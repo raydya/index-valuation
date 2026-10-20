@@ -6,17 +6,14 @@ from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import text
 
-from index_valuation.config import Settings
-from index_valuation.db import build_engine, database_info
+from index_valuation.db import database_info
 
 pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-def engine():
-    connection_engine = build_engine(Settings())
-    yield connection_engine
-    connection_engine.dispose()
+def engine(test_database_engine):
+    return test_database_engine
 
 
 def test_postgres_is_ready_and_migrated(engine):

@@ -1,5 +1,8 @@
 services:
   db:
+    # Historical standalone template only; original containers and volumes were removed.
+    # Shared PostgreSQL and backup-based recovery are managed by ../local-infra.
+    profiles: ["legacy"]
     image: postgres:17-bookworm
     restart: unless-stopped
     environment:

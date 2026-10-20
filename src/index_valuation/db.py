@@ -1,6 +1,6 @@
 """Database primitives shared by future ingestion and valuation jobs."""
 
-from sqlalchemy import MetaData, create_engine, text
+from sqlalchemy import URL, MetaData, create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -20,11 +20,17 @@ class Base(DeclarativeBase):
 
 
 def build_engine(settings: Settings) -> Engine:
+    return build_engine_for_url(
+        settings.database_url, connect_timeout=settings.postgres_connect_timeout
+    )
+
+
+def build_engine_for_url(url: URL, *, connect_timeout: int = 5) -> Engine:
     return create_engine(
-        settings.database_url,
+        url,
         pool_pre_ping=True,
         connect_args={
-            "connect_timeout": settings.postgres_connect_timeout,
+            "connect_timeout": connect_timeout,
             "options": "-c timezone=UTC",
         },
     )
