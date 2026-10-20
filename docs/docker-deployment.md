@@ -11,6 +11,7 @@
 | `compose.yaml` 的 `web` | 网页、CSV、估值与任务状态只读查询 |
 | `local-infra` 的 PostgreSQL | 应用专属库和运行/迁移账号，独立备份 |
 | Mac 09:00 / 17:00 的现有 LaunchAgent | 美股 / 中港采集、派生重建和 Telegram |
+| `cn.index-valuation.task-summary` | Mac 每天18:00将五项业务任务的执行结论汇总发送至 Telegram |
 | `cn.index-valuation.schedule-status` | 每 60 秒读取五项任务的 launchd 元数据，供网页展示 |
 
 容器通过专用内部网络 `local-infra-index-db`，以 `shared-postgres:5432` 访问 PG。

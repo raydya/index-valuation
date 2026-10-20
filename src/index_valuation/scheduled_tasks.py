@@ -18,6 +18,8 @@ from pathlib import Path
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from .erp_results import validate_result
+
 ZONE = ZoneInfo("Asia/Shanghai")
 ROOT = Path(__file__).resolve().parents[2]
 MAX_RECEIPT = 128 * 1024
@@ -44,7 +46,7 @@ TASKS = (
         "指数风险溢价表 ERP",
         "cn.index-valuation.erp-sheet",
         "run_erp_sync.py",
-        "更新表格的指数 PE、盈利收益率与中美国债输入；提交队列和表格完成分别记录。",
+        "独立执行表格的指数 PE、盈利收益率与中美国债更新；运行状态和回读结果分别记录。",
     ),
     Task(
         "portfolio_us",
@@ -690,8 +692,90 @@ class ScheduledTasks:
             run["summary"] = "结果摘要：" + first_line.lstrip("# ")[:300]
         return run
 
+    def _erp_execution(self, base, execution, warnings):
+        """A process outcome cannot stand in for a matched, verified business result."""
+        try:
+            UUID(execution["run_id"])
+            day = _day(execution["date"])
+            started = _datetime(execution["started_at"])
+            finished = _datetime(execution.get("finished_at"))
+            status = execution["status"]
+            now = self.now().astimezone(ZONE)
+            if (
+                execution.get("schema") != "erp_execution_v1"
+                or execution.get("task") != "erp"
+                or execution.get("mode") != "codex_exec"
+                or status
+                not in {"running", "completed", "partial", "failed", "timed_out", "interrupted"}
+                or started is None
+                or day != started.date().isoformat()
+                or started > now
+                or (status == "running" and execution.get("finished_at") is not None)
+                or (status != "running" and (finished is None or not started <= finished <= now))
+            ):
+                raise ValueError("执行状态字段无效")
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return _empty_run("unknown", "最新 ERP 执行记录无效，未采用旧队列结果代替"), []
+        run = _receipt_run(
+            execution, {"running", "completed", "partial", "failed", "timed_out", "interrupted"}
+        )
+        if status == "interrupted":
+            run["status"] = "failed"
+        receipt = _json(base / "results" / f"{day}.json", base, warnings)
+        clean = None
+        if receipt is not None:
+            try:
+                if receipt.get("task") != "erp" or any(
+                    receipt.get(key) != execution.get(key) for key in ("date", "run_id")
+                ):
+                    raise ValueError("业务回执身份不匹配")
+                clean = validate_result(
+                    receipt, not_before=started, now=now, require_all_items=True
+                )
+                if finished and _datetime(clean["finished_at"]) > finished:
+                    raise ValueError("业务回执晚于执行结束")
+            except (KeyError, TypeError, ValueError):
+                clean = None
+                warnings.append("ERP 业务回执不匹配或未通过验证，未作为完成依据")
+        if clean is not None:
+            run["result_text"] = _text(clean["result_text"])
+            run["issues"] = _strings(clean["issues"])
+            items = _data_items(clean["data_items"])
+        else:
+            items = []
+        if status == "running":
+            # The child can publish a receipt just before exiting; the parent
+            # still owns the process outcome and must close the execution first.
+            return run, items
+        if status in {"failed", "timed_out", "interrupted"}:
+            fallback = {
+                "failed": "ERP 执行进程失败，需要核对实际表格结果。",
+                "timed_out": "ERP 执行超过时限，写入结果可能未确认。",
+                "interrupted": "ERP 执行进程已中断，写入结果可能未确认。",
+            }[status]
+            run["issues"].append(run["summary"] or fallback)
+            if not run["summary"]:
+                run["summary"] = fallback
+            return run, items
+        if clean is None or (status == "completed" and run["exit_code"] != 0):
+            run["status"] = "unknown"
+            run["summary"] = "执行已结束，但缺少匹配且有效的表格回读结果"
+            return run, []
+        run["status"] = clean["status"]
+        if status == "partial" and clean["status"] == "completed":
+            run["status"] = "partial"
+            run["issues"].append(run["summary"] or "执行器报告部分完成，需要核对。")
+        run["summary"] = _text(clean["summary"], 1000)
+        return run, items
+
     def _erp_run(self, warnings):
         base = self.root / "data/scheduler/erp-sheet"
+        execution_path = base / "last-execution.json"
+        if execution_path.exists():
+            execution = _json(execution_path, base, warnings)
+            if execution is None:
+                return _empty_run("unknown", "最新执行回执不可读；未采用旧队列结果代替"), []
+            return self._erp_execution(base, execution, warnings)
         queue = _json(base / "last-queued.json", base, warnings)
         attempt = _json(base / "last-attempt.json", base, warnings)
         if (base / "last-attempt.json").exists() and attempt is None:

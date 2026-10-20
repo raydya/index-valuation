@@ -27,12 +27,11 @@ https://docs.google.com/spreadsheets/d/17B0OcBwSrwkBrcM8BlEDNfbtNeL2ZsXpGX_HDr5b
 
 使用精确十进制核对PE倒数和利差，批量写入后重新读取，验证C=1/B、E正确引用对应国债、F=C-E，无公式错误；确认未改变其他输入、公式和格式。向用户报告本次实际修改的项目、各项数据日期、未变化项及未核验/失败项，并提供原表链接。只在成功回读后报告更新完成；若连接器不可用或写入失败，明确报告未更新。
 
-执行结束后，另存一份本地结果供估值系统的“定时任务”页面展示；这是结果记录，不修改代码或调度。读取本条任务开头的“本次结果回执标识”，原样保留其中的 `date`、`queued_at`、`thread`，不得取另一次任务的标识。将以下字段写入项目 `data/scheduler/erp-sheet/result-input.json`，然后执行 `.venv/bin/python scripts/record_erp_result.py --input data/scheduler/erp-sheet/result-input.json`：
+执行结束后，按本次 `--output-schema` 指定的结构返回一个 JSON 对象，作为最终回答。宿主运行器会记录真实开始/结束时间及唯一执行标识，验证后自动写入完成回执；不要自行修改调度、代码、回执或使用旧排队标识。最终对象包括：
 
-- `date`、`queued_at`、`thread`：本次排队标识；`started_at`、`finished_at`：实际开始及完成时间，ISO 格式并含时区。
 - `status`：全部目标已核验为 `completed`；存在未更新或未核验项为 `partial`；无法读取、写入或回读验证为 `failed`。不能仅凭排队成功填 completed。
 - `readback_verified`：布尔值，只有真实回读验证完成才为 true；completed 和 partial 必须为 true。
 - `summary`：一句结果摘要；`issues`：未更新、未核验或失败原因的字符串列表；`result_text`：本次最终报告正文。
 - `data_items`：各目标的列表，每项包含 `name`、`date`（真实数据日期，未知为 null）、`complete_date`（已核验日期，未知为 null）、`status`（available / partial / unknown）、`note`（口径及限制）。QQQ 的数据集日期不得写成已核实的收盘估值日；恒生科技未知日期保持 null。
 
-记录脚本只接受与当前排队记录匹配的结果，并写入 `data/scheduler/erp-sheet/results/YYYY-MM-DD.json`。记录失败时在最终回复中明确说明，不能将页面仍显示排队解释为表格尚未修改。不要在结果文件中保存凭据、完整工具日志或与任务无关的会话内容。
+`data_items` 必须涵盖本次全部8个指数/ETF输入及中美两个国债输入，标准名称分别为：沪深300、中证A500、科创50、创业板指、恒生科技、SPY、QQQ、红利低波、美国10年国债、中国10年国债。每项只列一次，未更新项也需列出原因；不能只列成功项来报告 completed。`result_text` 保存完整简短报告及原表链接，字段值保留实际日期和来源口径。最终回答只输出 JSON，不用代码围栏。不要在结果中保存凭据、完整工具日志、本机路径或与任务无关的会话内容；不要另外发送 Telegram 或消息，定时汇总会读取宿主保存的回执。

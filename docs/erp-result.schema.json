@@ -1,0 +1,30 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "status": {"type": "string", "enum": ["completed", "partial", "failed"]},
+    "readback_verified": {"type": "boolean"},
+    "summary": {"type": "string"},
+    "issues": {"type": "array", "items": {"type": "string"}},
+    "result_text": {"type": "string"},
+    "data_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": ["沪深300", "中证A500", "科创50", "创业板指", "恒生科技", "SPY", "QQQ", "红利低波", "美国10年国债", "中国10年国债"]
+          },
+          "date": {"type": ["string", "null"]},
+          "complete_date": {"type": ["string", "null"]},
+          "status": {"type": "string", "enum": ["available", "partial", "unknown"]},
+          "note": {"type": "string"}
+        },
+        "required": ["name", "date", "complete_date", "status", "note"]
+      }
+    }
+  },
+  "required": ["status", "readback_verified", "summary", "issues", "result_text", "data_items"]
+}

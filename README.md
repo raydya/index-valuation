@@ -91,6 +91,8 @@ uv run index-valuation build-index --index csi300
 
 每日定时更新支持 **Telegram 私聊通知**：任务结束后汇总本轮结果、真实数据日期、PE、历史分位和估值区间，失败与缺口单独提示；默认关闭，绑定收件人后启用。配置、测试和失败补发见 [Telegram 通知说明](docs/telegram-notifications.md)。
 
+另有每天北京时间 **18:00 的五任务汇总**：统一报告美股与中港指数估值、两组持仓报价及 ERP 表格的实际执行时间、结果、数据日期和缺口，发送到同一私人会话。安装、预览与补发见 [每日任务汇总说明](docs/task-summary-notifications.md)。
+
 已有项目先运行 `uv run --locked alembic upgrade head` 创建独立的全收益数据表（迁移 `0007`）。为已有指数首次补充全收益历史，可运行以下命令；日后 `update-index` 和原有定时任务会一起更新，无需另设调度：
 
 ```bash
@@ -225,7 +227,7 @@ launchctl bootout gui/$(id -u)/cn.index-valuation.daily.us
 
 后续 Linux 采集部署可用 cron / systemd，并将调度时区设为 `Asia/Shanghai`，对应入口仍是 `scripts/run_scheduled.py --market CN HK`（17:00）和 `--market US`（09:00）。**当前采集继续由 Mac 执行**：美股 REST 凭据依赖 macOS Keychain，完成可续期凭据存储改造前不能直接迁到 Linux；中港采集还需验证容器到 OpenD 的连接。网页容器迁移不改变这些调度。
 
-Google Sheets 的 `Index ERP` 表另有每天北京时间08:00的独立任务，通过已有 Codex 会话的 Google Drive 连接器更新指数盈利收益率和中美国债收益率。安装、日志和验证见 [表格定时同步说明](docs/google-sheets-erp-schedule.md)。
+Google Sheets 的 `Index ERP` 表另有每天北京时间08:00的独立任务，启动 `codex exec` 并通过已有 Google Drive 连接器更新指数盈利收益率和中美国债收益率。宿主验证结构化回读结果并保存完成回执，不依赖旧会话消费队列。安装、日志和验证见 [表格定时同步说明](docs/google-sheets-erp-schedule.md)。
 
 同一文件的 `Portforlio` 持仓表每天09:00同步美股价格、17:00同步中港及基金价格，均通过 Google Drive 连接器读写；原2026-10-16单次任务已改为每日任务。配置与运行记录见 [持仓报价定时同步](docs/portfolio-price-schedule.md)。
 

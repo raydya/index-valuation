@@ -23,64 +23,13 @@ runner = load_script("run_erp_sync")
 recorder = load_script("record_erp_result")
 
 
-def prepare(root):
-    (root / "docs").mkdir()
-    # Arguments must remain literal text, including newlines and shell metacharacters.
-    (root / "docs/erp-sheet-update-task.md").write_text("Google Drive only\n`literal` $(literal)")
-
-
-def test_daily_8am_job_uses_existing_thread_and_separate_logs(tmp_path):
-    job = installer.job_definition(tmp_path, Path("/opt/homebrew/bin/codex"), THREAD)
+def test_daily_8am_job_executes_without_a_dormant_thread(tmp_path):
+    job = installer.job_definition(tmp_path, Path("/opt/homebrew/bin/codex"))
     assert job["StartCalendarInterval"] == {"Hour": 8, "Minute": 0}
-    assert job["ProgramArguments"][-2:] == ["--thread", THREAD]
+    assert "--thread" not in job["ProgramArguments"]
     assert "run_erp_sync.py" in job["ProgramArguments"][1]
     assert job["StandardOutPath"].endswith("/logs/erp-sheet.stdout.log")
     assert not job.get("RunAtLoad") and not job.get("KeepAlive")
-
-
-def test_queue_is_shell_free_deduplicates_only_receipts_and_probe_does_not_block_update(
-    tmp_path, monkeypatch
-):
-    prepare(tmp_path)
-    calls = []
-
-    def run(command, **kwargs):
-        calls.append((command, kwargs))
-        return SimpleNamespace(returncode=0, stdout="accepted\n", stderr="")
-
-    monkeypatch.setattr(runner.subprocess, "run", run)
-    codex = Path("/path with spaces/codex")
-    state = tmp_path / "data/scheduler/erp-sheet/last-queued.json"
-    assert runner.queue_update(tmp_path, codex, THREAD, probe=True) == 0
-    assert not state.exists()
-    assert runner.queue_update(tmp_path, codex, THREAD) == 0
-    assert runner.queue_update(tmp_path, codex, THREAD) == 0
-    assert len(calls) == 2
-    command, kwargs = calls[1]
-    assert command[:5] == [str(codex), "queue", "--thread", THREAD, "--message"]
-    assert command[5].endswith("Google Drive only\n`literal` $(literal)")
-    assert not kwargs.get("shell") and kwargs["timeout"] == 60
-    assert json.loads(state.read_text())["status"] == "queued"
-    attempt = json.loads((state.parent / "last-attempt.json").read_text())
-    assert attempt["status"] == "queued" and attempt["exit_code"] == 0
-    assert attempt["queued_at"] == json.loads(state.read_text())["queued_at"]
-
-
-@pytest.mark.parametrize("failure", [3, "timeout"])
-def test_failed_or_ambiguous_submission_is_not_marked_queued(tmp_path, monkeypatch, failure):
-    prepare(tmp_path)
-
-    def run(command, **kwargs):
-        if failure == "timeout":
-            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
-        return SimpleNamespace(returncode=failure, stdout="", stderr="unavailable")
-
-    monkeypatch.setattr(runner.subprocess, "run", run)
-    expected = 124 if failure == "timeout" else failure
-    assert runner.queue_update(tmp_path, Path("/bin/codex"), THREAD) == expected
-    assert not (tmp_path / "data/scheduler/erp-sheet/last-queued.json").exists()
-    attempt = json.loads((tmp_path / "data/scheduler/erp-sheet/last-attempt.json").read_text())
-    assert attempt["status"] == ("timed_out" if failure == "timeout" else "failed")
 
 
 def erp_result(root):
@@ -137,9 +86,7 @@ def test_result_rejects_wrong_task_unverified_success_or_invalid_times(tmp_path,
 
 def test_installer_does_not_replace_an_unrelated_job(tmp_path, monkeypatch):
     generated = tmp_path / f"{installer.LABEL}.plist"
-    generated.write_bytes(
-        plistlib.dumps(installer.job_definition(tmp_path, Path("/codex"), THREAD))
-    )
+    generated.write_bytes(plistlib.dumps(installer.job_definition(tmp_path, Path("/codex"))))
     targets = tmp_path / "LaunchAgents"
     targets.mkdir()
     target = targets / generated.name
@@ -159,7 +106,7 @@ def test_failed_reinstall_restores_previous_job(tmp_path, monkeypatch):
     targets = tmp_path / "LaunchAgents"
     targets.mkdir()
     generated = tmp_path / f"{installer.LABEL}.plist"
-    payload = installer.job_definition(tmp_path, Path("/codex"), THREAD)
+    payload = installer.job_definition(tmp_path, Path("/codex"))
     generated.write_bytes(plistlib.dumps(payload))
     payload["StartCalendarInterval"] = {"Hour": 7, "Minute": 0}
     original = plistlib.dumps(payload)

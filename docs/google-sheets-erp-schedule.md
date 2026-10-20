@@ -1,49 +1,72 @@
 # Google Sheets 指数风险溢价表定时同步
 
-每天北京时间 08:00（含周末），独立的 macOS LaunchAgent 将任务提交到用户已有的
-Codex 会话。会话使用 Google Drive 连接器更新 Portfolio 文件的 `Index ERP`
-（sheetId `1665776241`），并向用户报告实际数据日期、失败项和回读验证结果。
-指数盈利收益率按 PE 的倒数计算；国债为中美 10 年期。具体数据来源、口径和写入边界见
-[每日执行指令](erp-sheet-update-task.md)。Google 表格读写仅使用连接器，不使用 `gws`。
+每天北京时间08:00（含周末），Mac LaunchAgent 启动独立的 `codex exec`，通过已有
+Google Drive 连接器更新 Portfolio 文件的 `Index ERP`（sheetId `1665776241`）。
+不再向需要有人恢复执行的旧会话排队，不要求 Codex 界面打开。Google 表格读写仍仅使用
+连接器，不使用 Google CLI、Chrome 或自建 Google 凭据。
 
-本任务与本项目每天 17:00 / 09:00 更新本地指数数据库的任务独立；也不依赖 PostgreSQL
-或 OpenD。运行需机器开机、用户登录、系统时区 UTC+8，Codex 会话可用，Google Drive
-连接器授权和网络正常。建议保持 Codex 运行。系统睡眠、关机或会话繁忙可能延后执行，
-不能保证 08:00 整完成更新。
+指数盈利收益率按PE倒数计算，国债使用中美10年期收益率。具体来源、口径、保留项和回读要求见
+[每日执行指令](erp-sheet-update-task.md)。业务任务不依赖本地 PostgreSQL 或 OpenD。
+机器需开机、用户登录、系统时区UTC+8，Codex登录、连接器授权和网络正常；睡眠可能延后执行。
 
 ## 安装与检查
 
-下面使用本次已有会话 UUID；更换会话时必须先确认新会话可使用 Google Drive 连接器。
-先生成检查，再安装。重复安装同一标签会替换配置，不创建第二份任务。
+先检查生成配置，再替换同名ERP任务。安装器保留旧配置备份，只修改自己的标签，不触动持仓、
+指数或18:00汇总任务；正在执行时拒绝替换，安装不会立即执行。
 
 ```bash
-.venv/bin/python scripts/install_erp_schedule.py \
-  --codex /opt/homebrew/bin/codex --thread 01a13ebd-dc5d-7192-8d98-933910a4362d
+.venv/bin/python scripts/install_erp_schedule.py --codex /opt/homebrew/bin/codex
 plutil -p data/scheduler/cn.index-valuation.erp-sheet.plist
-.venv/bin/python scripts/install_erp_schedule.py \
-  --codex /opt/homebrew/bin/codex --thread 01a13ebd-dc5d-7192-8d98-933910a4362d --install
+.venv/bin/python scripts/run_erp_sync.py --dry-run
+.venv/bin/python scripts/install_erp_schedule.py --codex /opt/homebrew/bin/codex --install
 launchctl print "gui/$(id -u)/cn.index-valuation.erp-sheet"
 ```
 
-通过相同入口提交只读连接器验证，不改表，也不占用当天正式更新的提交记录：
+需要手动运行当天尚未执行的任务时：
 
 ```bash
-.venv/bin/python scripts/run_erp_sync.py \
-  --codex /opt/homebrew/bin/codex --thread 01a13ebd-dc5d-7192-8d98-933910a4362d --probe
+launchctl kickstart "gui/$(id -u)/cn.index-valuation.erp-sheet"
 ```
 
-调度器只调用 `codex queue`，不操作表格或创建新会话，也不改变 Codex 的沙箱或审批设置。
-成功排队不代表表格更新成功：排队回执保存在 `data/scheduler/erp-sheet/last-queued.json`，
-状态仅为 `queued`；执行与回读结果在原 Codex 会话中查看。任务按[执行指令](erp-sheet-update-task.md)通过
-`scripts/record_erp_result.py` 将结果保存到 `data/scheduler/erp-sheet/results/YYYY-MM-DD.json`，
-供[估值页面](http://127.0.0.1:8000/#scheduled-tasks)展示。回执必须匹配本次提交的日期、会话与排队时间；
-成功/部分完成必须已回读验证。没有匹配结果时仍显示排队待确认，不能据退出码0判断表格已更新。
-提交过程和失败另外记录到 `last-attempt.json`，与成功排队回执分开。两级结果应分别核对。
-同一北京时间日期、同一会话成功提交后不会再次提交；提交失败不写成功记录，超时须先检查
-会话是否已收到任务再决定是否重试。自动触发每日一次，不循环重试。
+`--dry-run` 不启动执行、不修改表格、不占用当天机会。正式执行每天最多一次：08:00前跳过，
+同一天已有尝试则不自动重跑，包括失败和超时。全程文件锁避免并发，子进程也持有锁；
+上次进程异常退出留下的运行记录，在确认锁已释放后记为中断，仍不自动重复写表。
+若需人工恢复，先核对该次事件、业务回执和真实表格，不能删除状态文件后盲目重跑。
 
-输出日志为 `logs/erp-sheet.stdout.log`、`logs/erp-sheet.stderr.log`。本任务不会自动
-重连过期的 Google 授权；连接器不可用时报告失败，保留表格原值和日期。
+## 执行、回执和异常
+
+执行命令使用与持仓任务相同的 `codex --no-daemon exec --approve-for-me`，保留自动审批审查，
+不关闭沙箱。提示从标准输入传入，不经shell解释。最长运行一小时，超时或中断会终止进程组。
+正常退出只说明流程结束；最终输出须符合[结果结构](erp-result.schema.json)，再由宿主验证并保存。
+
+| 路径 | 作用 |
+| --- | --- |
+| `data/scheduler/erp-sheet/last-execution.json` | 当前执行标识、开始/结束时间、进程和业务终态 |
+| `data/scheduler/erp-sheet/runs/YYYY-MM-DD/state.json` | 当天执行与防重记录 |
+| 同目录 `prompt.md` / `events.jsonl` / `stderr.log` / `result.json` | 执行指令、事件、错误及结构化最终输出 |
+| `data/scheduler/erp-sheet/results/YYYY-MM-DD.json` | 匹配执行标识的已验证业务回执 |
+| `logs/erp-sheet.stdout.log` / `logs/erp-sheet.stderr.log` | LaunchAgent 运行日志 |
+
+`completed` 表示十个目标均提供已核验日期、没有未解决问题且已真实回读；`partial` 表示已回读，
+但存在来源未更新、日期或口径未核实；无法读取、写入或回读时为 `failed`。进程退出0但缺少有效
+业务回执也记为失败。退出码0/2/1分别对应完成/部分完成/失败；超时124，中断按信号记录。
+不把失败写成“未修改表格”：写入可能已完成但回读/保存失败，必须核对真实表格。
+
+网页及每天18:00 Telegram汇总读取同一回执。新执行结果优先，缺失或损坏时不以旧完成结果代替；
+旧 `last-queued.json`、`last-attempt.json` 保留供历史查询，不再作为新任务的执行入口。
+修改状态解析代码后需要 `make web-up` 重建网页镜像；日常结果更新无需重建。
+
+## 从旧队列方式迁移
+
+2026-10-20已确认旧任务仅调用 `codex queue`，10月17日至20日四条消息没有启动执行。
+迁移时通过 Codex App Server 的 `thread/queue/list` 核对目标会话与ERP身份，备份后按精确消息ID
+调用 `thread/queue/delete`，最终确认队列为空；未修改内部数据库或删除会话。
+审计保存在 `data/scheduler/erp-sheet/diagnostics/queue-retired-2026-10-20.json`。
+之后只执行当天更新，不把积压四条逐一重放，以免旧任务重复覆盖表格。
+
+其他机器迁移前也需核对旧队列，不能只换定时器。队列接口以本机版本支持的schema为准。
+旧的 `--thread` 和 `--probe` 参数已移除；记录脚本仅为历史兼容/受控人工记录入口，常规任务由宿主
+自动生成执行身份和时间，不依赖模型另调用一次脚本。
 
 ## 停用
 
@@ -51,5 +74,5 @@ launchctl print "gui/$(id -u)/cn.index-valuation.erp-sheet"
 launchctl bootout "gui/$(id -u)/cn.index-valuation.erp-sheet"
 ```
 
-如果不再需要开机登录后加载，将对应 `~/Library/LaunchAgents/cn.index-valuation.erp-sheet.plist`
-移出 LaunchAgents 目录。保留项目脚本和日志不会自行运行。
+停用前核对任务是否运行。若正在运行，此操作会中断执行，须检查实际表格及回执；
+不再需要登录后加载时，将对应plist移出 `~/Library/LaunchAgents/`。历史结果应保留。

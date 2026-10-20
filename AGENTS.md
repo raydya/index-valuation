@@ -98,6 +98,10 @@ uv run --locked index-valuation build-index --index "$index_key"
 
 macOS 调度由 [scripts/install_schedule.py](scripts/install_schedule.py) 生成，入口 [scripts/run_scheduled.py](scripts/run_scheduled.py) 按市场执行 `update-index`，单次最长一小时。北京时间每天17:00更新A股和港股、每天09:00更新美股，包含周末及节假日，数据日期仍由各市场日历过滤。新增指数按市场自动归入任务；机器需开机、用户已登录、系统时区为 UTC+8，数据服务可访问。
 
+每天18:00的 Telegram 五任务汇总由独立宿主任务 `cn.index-valuation.task-summary` 执行，入口、安装与重试见[每日任务汇总说明](docs/task-summary-notifications.md)。复用现有私人收件配置，读取当天匹配的执行回执和批次报告；排队不等于完成，缺失回执不得用旧日结果替代。同日摘要冻结后不改写，已确认发送或送达未知的消息不自动重发；18:00前的 `send` 跳过，不预先冻结当日摘要。汇总不重新执行业务任务，也不取代原批次估值通知。
+
+ERP 每天08:00由独立 `codex exec` 通过 Google Drive 连接器更新，不能改回只提交 `codex queue` 的流程。执行、业务回执分别记录，以 `date/run_id` 匹配；退出0不代表表格完成，必须通过结构化回读校验。宿主全程锁与当天尝试记录防止重复写表，失败或超时后先核对真实表格再恢复，不删除回执盲目重跑。入口、来源和结果规范见[ERP 定时同步说明](docs/google-sheets-erp-schedule.md)。
+
 安装或调整调度时先生成并检查两个 plist，再在用户已授权范围内安装。安装器加载新任务后备份并移除旧的全市场任务；完成标准是两个新任务的市场参数、时刻与日志路径正确，旧任务已停用。日常增量不重复安装：
 
 ```bash

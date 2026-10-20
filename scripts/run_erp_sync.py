@@ -1,152 +1,187 @@
-"""Queue the authorized Google Drive connector task in an existing Codex session."""
+"""Execute the authorized ERP connector task and persist a validated business receipt."""
 
 import argparse
 import fcntl
 import json
-import subprocess
+import os
 from datetime import datetime
 from pathlib import Path
-from uuid import UUID
+from uuid import uuid4
 from zoneinfo import ZoneInfo
+
+from index_valuation.codex_runner import execute_codex
+from index_valuation.erp_results import save_result
+from index_valuation.telegram_notifications import save_json
 
 ROOT = Path(__file__).resolve().parents[1]
 ZONE = ZoneInfo("Asia/Shanghai")
-PROBE = """这是每日08:00表格同步的连接器链路验证。
-请仅使用 Google Drive 连接器读取以下表格的元数据及 Index ERP 的 A1:P10，
-核对 sheetId=1665776241、PE/盈利收益率公式及中美国债输入是否可读。
-https://docs.google.com/spreadsheets/d/17B0OcBwSrwkBrcM8BlEDNfbtNeL2ZsXpGX_HDr5b4kQ/edit?gid=1665776241
-只做读取，不修改任何表格或调度，不使用 Google CLI（gws）或 Chrome。
-简短向用户报告连接器验证结果；若失败，明确说明原因。"""
 
 
-def save_attempt(path, record):
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
-    temporary.replace(path)
-
-
-def queue_update(root: Path, codex: Path, thread: str, *, probe: bool = False) -> int:
-    now = datetime.now(ZONE)
-    state_dir = root / "data/scheduler/erp-sheet"
-    state_dir.mkdir(parents=True, exist_ok=True)
-    state_path = state_dir / "last-queued.json"
-    # A manual invocation and launchd must not submit the same daily task together.
-    with (state_dir / "queue.lock").open("a") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            print("ERP submission already in progress; skipped.", flush=True)
-            return 0
-        if not probe and state_path.exists():
-            previous = json.loads(state_path.read_text())
-            if previous.get("date") == now.date().isoformat() and previous.get("thread") == thread:
-                print(
-                    "Today's ERP task is already queued; sheet completion is in Codex.", flush=True
-                )
-                return 0
-        identity = {"date": now.date().isoformat(), "queued_at": now.isoformat(), "thread": thread}
-        message = (
-            PROBE
-            if probe
-            else (
-                f"提交时间：{now.isoformat()}。这是用户已授权的每日表格更新。\n"
-                f"本次结果回执标识（原样保留）：{json.dumps(identity, ensure_ascii=False)}\n\n"
-                + (root / "docs/erp-sheet-update-task.md").read_text()
+def run_update(root: Path, codex: Path, *, dry_run=False, now=None) -> int:
+    now = (now or datetime.now(ZONE)).astimezone(ZONE)
+    base = root / "data/scheduler/erp-sheet"
+    run_dir = base / "runs" / now.date().isoformat()
+    state_path = run_dir / "state.json"
+    eligibility = (
+        "not_due" if now.hour < 8 else "already_attempted" if state_path.exists() else "due"
+    )
+    if dry_run or eligibility == "not_due":
+        print(
+            json.dumps(
+                {"date": str(now.date()), "eligibility": eligibility, "will_execute": False},
+                ensure_ascii=False,
             )
         )
-        command = [str(codex), "queue", "--thread", thread, "--message", message]
-        print(f"{now.isoformat()} submitting ERP {'probe' if probe else 'update'}", flush=True)
-        attempt_path = state_dir / "last-attempt.json"
-        attempt = {
-            **identity,
-            "status": "running",
-            "started_at": now.isoformat(),
-            "finished_at": None,
-            "exit_code": None,
-            "summary": "正在提交表格更新任务。",
-        }
-        if not probe:
-            save_attempt(attempt_path, attempt)
-        try:
-            result = subprocess.run(
-                command, cwd=root, capture_output=True, text=True, timeout=60, check=False
-            )
-        except subprocess.TimeoutExpired:
-            if not probe:
-                attempt.update(
-                    status="timed_out",
-                    finished_at=datetime.now(ZONE).isoformat(),
-                    exit_code=124,
-                    summary="提交回执超时，是否已排队未知；请先核对会话，避免重复写表。",
-                )
-                save_attempt(attempt_path, attempt)
-            print(
-                "Queue receipt timed out; submission status unknown. Check Codex before retrying."
-            )
-            return 124
-        except OSError:
-            if not probe:
-                attempt.update(
-                    status="failed",
-                    finished_at=datetime.now(ZONE).isoformat(),
-                    exit_code=1,
-                    summary="无法启动表格任务提交程序，请检查 Codex 运行环境。",
-                )
-                save_attempt(attempt_path, attempt)
-            return 1
-        if result.stdout:
-            print(result.stdout, end="" if result.stdout.endswith("\n") else "\n", flush=True)
-        if result.stderr:
-            print(result.stderr, end="" if result.stderr.endswith("\n") else "\n", flush=True)
-        if result.returncode:
-            if not probe:
-                attempt.update(
-                    status="failed",
-                    finished_at=datetime.now(ZONE).isoformat(),
-                    exit_code=result.returncode,
-                    summary="表格任务提交失败，未记录成功排队。",
-                )
-                save_attempt(attempt_path, attempt)
-            print(f"Queue failed with exit {result.returncode}; no successful receipt recorded.")
-            return result.returncode
-        if not probe:
-            temporary = state_path.with_suffix(".tmp")
-            temporary.write_text(
-                json.dumps(
-                    {
-                        "status": "queued",
-                        "date": now.date().isoformat(),
-                        "queued_at": now.isoformat(),
-                        "thread": thread,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-                + "\n"
-            )
-            temporary.replace(state_path)
-            attempt.update(
-                status="queued",
-                finished_at=datetime.now(ZONE).isoformat(),
-                exit_code=0,
-                summary="已排队，等待执行结果；排队成功不代表表格更新完成。",
-            )
-            save_attempt(attempt_path, attempt)
-        print("Queued only; Google Drive readback and the result will appear in the Codex session.")
         return 0
+    instructions = (root / "docs/erp-sheet-update-task.md").read_text()
+    schema = root / "docs/erp-result.schema.json"
+    json.loads(schema.read_text())
+    previous_umask = os.umask(0o077)
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        with (base / "execution.lock").open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print("ERP execution is still running; skipped.")
+                return 0
+            if state_path.exists():
+                previous = json.loads(state_path.read_text())
+                if previous.get("status") == "running":
+                    # The inherited lock also covers the child. Owning it now proves
+                    # the previous process tree no longer owns this execution.
+                    previous.update(
+                        status="interrupted",
+                        exit_code=1,
+                        finished_at=datetime.now(ZONE).isoformat(),
+                        summary="上次执行异常退出，未自动重复写表；实际结果须核对。",
+                    )
+                    save_json(state_path, previous)
+                    save_json(base / "last-execution.json", previous)
+                    print("Previous ERP execution was interrupted; not retried.")
+                    return 1
+                print("Today's ERP attempt already exists; skipped.")
+                return 0
+            run_dir.mkdir(parents=True, exist_ok=True)
+            record = {
+                "schema": "erp_execution_v1",
+                "task": "erp",
+                "mode": "codex_exec",
+                "date": str(now.date()),
+                "run_id": str(uuid4()),
+                "started_at": now.isoformat(),
+                "finished_at": None,
+                "status": "running",
+                "exit_code": None,
+                "summary": "正在独立执行 ERP 表格更新，等待回读验证。",
+            }
+
+            def persist():
+                save_json(state_path, record)
+                save_json(base / "last-execution.json", record)
+
+            try:
+                persist()
+                prompt = (
+                    f"实际执行时间：{now.isoformat()}。本次执行标识：{record['run_id']}。\n"
+                    "这是已授权的每日 ERP 更新修复后的实际执行，不是研究或排队任务。\n\n"
+                    + instructions
+                )
+                (run_dir / "prompt.md").write_text(prompt)
+                process = execute_codex(
+                    root=root,
+                    codex=codex,
+                    prompt=prompt,
+                    run_dir=run_dir,
+                    schema=schema,
+                    lock_fd=lock.fileno(),
+                )
+                finished = datetime.now(ZONE).isoformat()
+                identity = {key: record[key] for key in ("date", "run_id", "started_at")}
+                failure = {
+                    **identity,
+                    "finished_at": finished,
+                    "status": "failed",
+                    "readback_verified": False,
+                    "data_items": [],
+                    "summary": "不能确认 ERP 表格更新完成；执行失败或缺少有效回读结果。",
+                    "issues": ["请先核对本次执行记录和表格；未自动重复写入。"],
+                    "result_text": "本次没有取得可确认的表格完成回执，不能据进程退出判断更新成功。",
+                }
+                code = process["exit_code"]
+                if code == 0:
+                    try:
+                        path = run_dir / "result.json"
+                        if path.stat().st_size > 128 * 1024:
+                            raise ValueError("result too large")
+                        payload = json.loads(path.read_text())
+                        if not isinstance(payload, dict):
+                            raise ValueError("invalid result")
+                        payload = {**payload, **identity, "finished_at": finished}
+                        save_result(root, payload)
+                        record["status"] = payload["status"]
+                        record["summary"] = payload["summary"]
+                        code = {"completed": 0, "partial": 2, "failed": 1}[payload["status"]]
+                    except (OSError, ValueError, TypeError, KeyError):
+                        save_result(root, failure)
+                        record.update(status="failed", summary=failure["summary"])
+                        code = 1
+                else:
+                    reason = {
+                        "timed_out": "ERP 执行超过一小时，已终止进程组，表格写入结果待核对。",
+                        "interrupted": "ERP 执行被中断，已终止进程组，表格写入结果待核对。",
+                    }.get(process["status"], "ERP 执行进程失败，表格写入结果待核对。")
+                    failure.update(summary=reason, issues=[reason, *failure["issues"]])
+                    save_result(root, failure)
+                    record.update(status=process["status"], summary=reason)
+                record.update(
+                    finished_at=finished, exit_code=code, process_exit_code=process["exit_code"]
+                )
+                persist()
+                print(
+                    json.dumps(
+                        {
+                            key: record[key]
+                            for key in (
+                                "date",
+                                "run_id",
+                                "started_at",
+                                "finished_at",
+                                "status",
+                                "exit_code",
+                            )
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                return code
+            except (OSError, ValueError, TypeError, KeyError):
+                record.update(
+                    status="failed",
+                    exit_code=1,
+                    finished_at=datetime.now(ZONE).isoformat(),
+                    summary="ERP 执行或结果保存失败，表格是否已修改须核对；未自动重试。",
+                )
+                # Preserve failure evidence even when the business-result directory is broken.
+                for target in (state_path, base / "last-execution.json"):
+                    try:
+                        save_json(target, record)
+                    except OSError:
+                        pass
+                print("ERP execution or receipt persistence failed; no automatic retry.")
+                return 1
+    finally:
+        os.umask(previous_umask)
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(
-        description="通过当前 Codex 会话的 Google Drive 连接器同步表格"
-    )
-    parser.add_argument("--thread", required=True, type=UUID, help="已有 Codex 会话 UUID")
-    parser.add_argument("--codex", required=True, type=Path, help="Codex 可执行文件绝对路径")
-    parser.add_argument("--probe", action="store_true", help="仅提交连接器只读验证，不更新表格")
+    parser = argparse.ArgumentParser(description="每天08:00独立执行 ERP Google Drive 连接器更新")
+    parser.add_argument("--codex", type=Path, default=Path("/opt/homebrew/bin/codex"))
+    parser.add_argument("--dry-run", action="store_true", help="只检查是否到期，不执行、不写回执")
     args = parser.parse_args(argv)
-    if not args.codex.is_absolute() or not args.codex.is_file():
-        parser.error("--codex 必须指向已有的绝对路径")
-    return queue_update(ROOT, args.codex, str(args.thread), probe=args.probe)
+    if not args.codex.is_absolute() or not os.access(args.codex, os.X_OK):
+        parser.error("--codex 必须是可执行的绝对路径")
+    return run_update(ROOT, args.codex, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":
