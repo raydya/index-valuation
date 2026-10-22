@@ -1,4 +1,4 @@
-"""Bounded, noninteractive Codex execution for connector-backed host jobs."""
+"""Bounded, noninteractive Codex execution for host research and connector jobs."""
 
 import os
 import signal
@@ -39,14 +39,17 @@ def _stop(child):
             signal.signal(signum, handler)
 
 
-def execute_codex(*, root, codex, prompt, run_dir, schema, lock_fd=None, timeout=3600):
-    """Run a fresh session; process exit never asserts that a sheet was updated."""
+def execute_codex(
+    *, root, codex, prompt, run_dir, schema, lock_fd=None, timeout=3600, research_only=False
+):
+    """Run a fresh session; the caller must validate its structured business result."""
     output = Path(run_dir) / "result.json"
-    command = [
-        str(codex),
-        "--no-daemon",
-        "exec",
-        "--approve-for-me",
+    command = [str(codex), "--no-daemon"]
+    if research_only:
+        command += ["--search", "--ask-for-approval", "never", "exec", "--sandbox", "read-only"]
+    else:
+        command += ["exec", "--approve-for-me"]
+    command += [
         "-C",
         str(root),
         "--json",

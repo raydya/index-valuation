@@ -18,6 +18,7 @@
     partial: ['部分完成', 'warning'],
     failed: ['执行失败', 'error'],
     timed_out: ['执行超时', 'error'],
+    interrupted: ['执行中断', 'error'],
     unknown: ['结果待核实', 'neutral'],
   };
   const schedulerStates = {
@@ -167,6 +168,15 @@
     detail.append(timeline);
     if (status === 'queued') detail.append(element('p', 'task-detail-help', '任务已进入队列，尚未确认开始执行或更新数据。'));
     if (status === 'finished') detail.append(element('p', 'task-detail-help', '已收到执行结果。具体更新范围与缺口以以下记录为准，不能据此认定全部数据已更新。'));
+    if (task.id === 'policy_daily') {
+      detail.append(element('p', 'task-detail-help', '政策日报按报告标明的检索窗口汇总公开政策。正负面影响属于分析判断；未发现重要政策不等于确认没有发布，覆盖限制见结果原文。'));
+      const notification = {
+        sent: '已发送', failed: '发送失败', delivery_unknown: '送达待确认',
+        sending: '发送中 / 结果待确认', disabled: '未启用', not_configured: '未配置',
+        pending: '等待发送', not_sent: '尚未发送', skipped: '本次未发送',
+      }[run.notification_status];
+      if (notification) detail.append(element('p', 'task-detail-help', `政策日报 Telegram：${notification}`));
+    }
     if (run.summary) detail.append(element('p', 'task-full-summary', run.summary));
     if (issues.length) {
       const issueBlock = element('div', 'task-issues');
@@ -215,7 +225,7 @@
     });
     const tasks = snapshot.tasks;
     const enabled = tasks.filter(task => ['enabled', 'running'].includes(task.scheduler?.state)).length;
-    const attention = tasks.filter(task => issuesFor(task).length || ['partial', 'failed', 'timed_out'].includes(task.last_run?.status)).length;
+    const attention = tasks.filter(task => issuesFor(task).length || ['partial', 'failed', 'timed_out', 'interrupted'].includes(task.last_run?.status)).length;
     const active = tasks.filter(task => ['queued', 'running'].includes(task.last_run?.status)).length;
     const counts = [`${tasks.length} 项任务`, `${enabled} 项调度已启用`];
     if (attention) counts.push(`${attention} 项需关注`);

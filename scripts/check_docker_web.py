@@ -20,7 +20,7 @@ import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "data/exports/docker-migration"
-TASK_IDS = {"erp", "portfolio_us", "index_us", "index_asia", "portfolio_asia"}
+TASK_IDS = {"erp", "portfolio_us", "index_us", "index_asia", "portfolio_asia", "policy_daily"}
 HISTORICAL_KEYS = {"csi300", "hstech", "sp500"}
 MAX_DIFFERENCES = 40
 IGNORED_FIELDS = ["checked_at", "tasks[*].scheduler.source"]
@@ -126,8 +126,10 @@ def require_baseline(endpoint, response):
         raise ValueError(f"{endpoint}: HTTP {response['http_status']}, cannot establish baseline")
     body = response["body"]
     if endpoint == "/api/scheduled-tasks":
-        if {item["id"] for item in body["tasks"]} != TASK_IDS or len(body["tasks"]) != 5:
-            raise ValueError("The baseline must contain the five known scheduled tasks")
+        if {item["id"] for item in body["tasks"]} != TASK_IDS or len(body["tasks"]) != len(
+            TASK_IDS
+        ):
+            raise ValueError("The baseline must contain all known scheduled tasks")
     elif "/dashboard" in endpoint:
         for key in ("selected", "series", "price_return", "total_return", "panic_line"):
             if key not in body:

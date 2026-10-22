@@ -120,7 +120,7 @@ def uninstall(root: Path, target_dir: Path, domain: str):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="生成或安装每天北京时间18:00的五任务汇总通知")
+    parser = argparse.ArgumentParser(description="生成或安装每天北京时间18:00的六任务汇总通知")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--generate", action="store_true", help="仅生成 plist，默认行为")
     modes.add_argument("--install", action="store_true", help="安装独立的当前用户 LaunchAgent")
@@ -137,7 +137,7 @@ def main(argv=None):
         domain = f"gui/{os.getuid()}"
         if args.uninstall:
             uninstall(root, target_dir, domain)
-            print("已卸载18:00汇总通知任务；五个业务任务保持不变。")
+            print("已卸载18:00汇总通知任务；六个业务任务保持不变。")
             return 0
         for relative in (".venv/bin/python", "scripts/notify_task_summary.py"):
             if not (root / relative).is_file():

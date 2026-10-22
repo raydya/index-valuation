@@ -153,7 +153,7 @@ async def main():
             assert await page.locator("#market-overview-groups").text_content() == previous
             await expect(page.locator("#error")).to_be_hidden()
             assert await page.locator("#chart path").count() > 0
-            await expect(page.locator(".task-row")).to_have_count(5)
+            await expect(page.locator(".task-row")).to_have_count(6)
             await page.unroute(API, unavailable)
             response = await refresh(page)
             assert response.status == 200

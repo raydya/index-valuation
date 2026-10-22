@@ -1,0 +1,281 @@
+{
+  "$defs": {
+    "PolicyEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "policy_summary": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Policy Summary",
+          "type": "string"
+        },
+        "agency": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Agency",
+          "type": "string"
+        },
+        "published_date": {
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "title": "Published Date",
+          "type": "string"
+        },
+        "published_at": {
+          "anyOf": [
+            {
+              "maxLength": 40,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Published At"
+        },
+        "effective_date": {
+          "anyOf": [
+            {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Effective Date"
+        },
+        "stage": {
+          "enum": [
+            "announcement",
+            "draft",
+            "issued",
+            "effective"
+          ],
+          "title": "Stage",
+          "type": "string"
+        },
+        "scope": {
+          "enum": [
+            "nationwide",
+            "sector",
+            "local"
+          ],
+          "title": "Scope",
+          "type": "string"
+        },
+        "importance": {
+          "enum": [
+            "major",
+            "material",
+            "routine"
+          ],
+          "title": "Importance",
+          "type": "string"
+        },
+        "impact": {
+          "enum": [
+            "positive",
+            "negative",
+            "mixed",
+            "neutral",
+            "uncertain"
+          ],
+          "title": "Impact",
+          "type": "string"
+        },
+        "affected_assets": {
+          "items": {
+            "maxLength": 60,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 6,
+          "minItems": 1,
+          "title": "Affected Assets",
+          "type": "array"
+        },
+        "mechanism": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Mechanism",
+          "type": "string"
+        },
+        "comparison_to_924": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Comparison To 924",
+          "type": "string"
+        },
+        "confidence": {
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "title": "Confidence",
+          "type": "string"
+        },
+        "source_url": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Source Url",
+          "type": "string"
+        },
+        "source_title": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Source Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "policy_summary",
+        "agency",
+        "published_date",
+        "published_at",
+        "effective_date",
+        "stage",
+        "scope",
+        "importance",
+        "impact",
+        "affected_assets",
+        "mechanism",
+        "comparison_to_924",
+        "confidence",
+        "source_url",
+        "source_title"
+      ],
+      "title": "PolicyEvent",
+      "type": "object"
+    },
+    "SourceCoverage": {
+      "additionalProperties": false,
+      "properties": {
+        "authority": {
+          "enum": [
+            "government",
+            "pbc",
+            "mof",
+            "ndrc",
+            "csrc",
+            "nfra",
+            "mohurd",
+            "mofcom"
+          ],
+          "title": "Authority",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "checked",
+            "unavailable"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "urls": {
+          "items": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 4,
+          "title": "Urls",
+          "type": "array"
+        },
+        "note": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "authority",
+        "status",
+        "urls",
+        "note"
+      ],
+      "title": "SourceCoverage",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "enum": [
+        "completed",
+        "partial",
+        "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "summary": {
+      "maxLength": 600,
+      "minLength": 1,
+      "title": "Summary",
+      "type": "string"
+    },
+    "overall_impact": {
+      "enum": [
+        "positive",
+        "negative",
+        "mixed",
+        "neutral",
+        "uncertain"
+      ],
+      "title": "Overall Impact",
+      "type": "string"
+    },
+    "major_policy_signal": {
+      "title": "Major Policy Signal",
+      "type": "boolean"
+    },
+    "events": {
+      "items": {
+        "$ref": "#/$defs/PolicyEvent"
+      },
+      "maxItems": 8,
+      "title": "Events",
+      "type": "array"
+    },
+    "coverage": {
+      "items": {
+        "$ref": "#/$defs/SourceCoverage"
+      },
+      "maxItems": 8,
+      "title": "Coverage",
+      "type": "array"
+    },
+    "issues": {
+      "items": {
+        "maxLength": 300,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 40,
+      "title": "Issues",
+      "type": "array"
+    }
+  },
+  "required": [
+    "status",
+    "summary",
+    "overall_impact",
+    "major_policy_signal",
+    "events",
+    "coverage",
+    "issues"
+  ],
+  "title": "PolicyResult",
+  "type": "object"
+}

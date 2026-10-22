@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "data/exports"
 URL = os.environ.get("WEB_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 API = f"{URL}/api/scheduled-tasks"
-TASK_IDS = {"erp", "portfolio_us", "index_us", "index_asia", "portfolio_asia"}
+TASK_IDS = {"erp", "portfolio_us", "index_us", "index_asia", "portfolio_asia", "policy_daily"}
 RUN_LABELS = {
     "never_run": "尚无执行记录",
     "queued": "已排队",
@@ -23,6 +23,7 @@ RUN_LABELS = {
     "partial": "部分完成",
     "failed": "执行失败",
     "timed_out": "执行超时",
+    "interrupted": "执行中断",
     "unknown": "结果待核实",
 }
 SCHEDULER_LABELS = {
@@ -43,7 +44,7 @@ DATA_LABELS = {
 def validate_payload(payload):
     assert payload["timezone"] == "Asia/Shanghai"
     assert payload["checked_at"]
-    assert len(payload["tasks"]) == 5
+    assert len(payload["tasks"]) == len(TASK_IDS)
     assert {task["id"] for task in payload["tasks"]} == TASK_IDS
 
 
@@ -59,8 +60,8 @@ async def expand(row, opened=True):
 
 async def check_rows(page, snapshot):
     validate_payload(snapshot)
-    await expect(page.locator(".task-row")).to_have_count(5)
-    await expect(page.locator("#tasks-overview")).to_contain_text("5 项任务")
+    await expect(page.locator(".task-row")).to_have_count(len(TASK_IDS))
+    await expect(page.locator("#tasks-overview")).to_contain_text(f"{len(TASK_IDS)} 项任务")
     await expect(page.locator("#tasks-checked-at")).to_contain_text("状态读取于")
     for task in snapshot["tasks"]:
         row = task_row(page, task["id"])
@@ -246,7 +247,7 @@ async def main():
                 "original_results_checked": original_results,
                 "scheduled_api_gets": sum(url == API for _, url in requests),
                 "checks": [
-                    "five_live_tasks_match_api_names_schedules_and_separate_statuses",
+                    "all_live_tasks_match_api_names_schedules_and_separate_statuses",
                     "erp_and_index_data_dates_and_complete_dates_match_api",
                     "data_notes_expand_to_show_full_text_without_oversized_default_rows",
                     "original_result_text_preserved",

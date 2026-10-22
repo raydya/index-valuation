@@ -1,4 +1,4 @@
-"""Bridge the Mac's five investment schedules to a read-only container."""
+"""Bridge the Mac's investment schedules to a read-only container."""
 
 import argparse
 import os
@@ -112,7 +112,7 @@ def main(argv=None):
     try:
         if args.uninstall:
             uninstall(root, Path.home() / "Library/LaunchAgents", f"gui/{os.getuid()}")
-            print("状态导出任务已卸载；原有五个任务及快照文件保持不变。")
+            print("状态导出任务已卸载；原有六个任务及快照文件保持不变。")
             return 0
         if args.generate or args.install:
             (root / "logs").mkdir(parents=True, exist_ok=True)
@@ -128,7 +128,7 @@ def main(argv=None):
         )
         if args.install:
             install(root, generated, Path.home() / "Library/LaunchAgents", f"gui/{os.getuid()}")
-            print("已安装独立状态任务：每 60 秒只读检查五个任务；不执行采集或发送消息。")
+            print("已安装独立状态任务：每 60 秒只读检查六个任务；不执行采集或发送消息。")
     except (OSError, ValueError, subprocess.SubprocessError, plistlib.InvalidFileException):
         # Do not log raw launchctl output or arbitrary plist values.
         print("状态快照或调度配置操作失败；请检查文件权限及同名任务归属。", file=sys.stderr)

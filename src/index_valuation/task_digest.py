@@ -20,18 +20,42 @@ from index_valuation.telegram_notifications import (
 
 ZONE = ZoneInfo("Asia/Shanghai")
 SCHEMA = "daily_task_summary_v1"
-ORDER = ("index_us", "index_asia", "portfolio_us", "portfolio_asia", "erp")
+ORDER = ("index_us", "index_asia", "portfolio_us", "portfolio_asia", "erp", "policy_daily")
 LABELS = {
     "finished": "流程已返回",
-    "completed": "完成（回执已确认回读）",
+    "completed": "完成",
     "partial": "部分完成",
     "failed": "执行失败",
     "timed_out": "执行超时",
+    "interrupted": "执行中断",
     "running": "仍在执行",
     "queued": "已提交队列，尚无匹配的完成回执",
     "unknown": "状态待确认",
     "never_run": "无执行回执",
 }
+
+
+def _status_label(key, status):
+    if key == "erp" and status == "completed":
+        return "完成（回执已确认回读）"
+    if key.startswith("portfolio_") and status == "finished":
+        return "进程已结束，数据结果见下"
+    return LABELS.get(status, "状态待确认")
+
+
+def _notification_line(status, prefix):
+    value = {
+        "sent": "已发送",
+        "failed": "发送失败",
+        "delivery_unknown": "发送结果不确定",
+        "sending": "发送结果待确认",
+        "disabled": "推送未启用",
+        "not_configured": "未配置",
+        "pending": "等待发送",
+        "not_sent": "尚未发送",
+        "skipped": "本次未发送",
+    }.get(status)
+    return f"{prefix} Telegram {value}" if value else None
 
 
 def _mapping(value):
@@ -71,6 +95,10 @@ def _times(run):
 
 
 def _belongs_today(run, today, checked):
+    # Policy reports are assigned to the search window's date, even if a late
+    # execution happens to finish after midnight. Never repeat yesterday's news.
+    if run.get("date") is not None and _day(run["date"]) != today:
+        return False
     return any(
         value is not None and value.date() == today and value <= checked
         for value in _times(run).values()
@@ -226,7 +254,7 @@ def read_index_batches(root, specs, snapshot):
 
 
 def build_task_digest(snapshot, batches=None):
-    """Render the five task conclusions; old receipts never become today's success."""
+    """Render task conclusions; old receipts never become today's success."""
     checked = _time(snapshot.get("checked_at"))
     if checked is None:
         raise ValueError("缺少汇总检查时间")
@@ -257,38 +285,28 @@ def build_task_digest(snapshot, batches=None):
                 lines.append("今日未见执行回执")
                 if times:
                     lines.append(
-                        "最近记录 "
-                        + _execution(run, today)
-                        + "｜"
-                        + LABELS.get(status, "状态待确认")
+                        "最近记录 " + _execution(run, today) + "｜" + _status_label(key, status)
                     )
             warnings = row.get("warnings") or []
             if warnings:
                 lines.append("提示：" + "；".join(_plain(item, 250) for item in warnings[:3]))
             continue
-        label = (
-            "进程已结束，数据结果见下"
-            if key.startswith("portfolio_") and status == "finished"
-            else LABELS.get(status, "状态待确认")
-        )
+        label = _status_label(key, status)
         lines.append(f"实际 {_execution(run, today)}｜{label}")
         if key.startswith("portfolio_"):
             result = _portfolio_result(run.get("result_text"))
             lines.append("执行结果摘录：" + result if result else "尚无可核对的结果文本")
         elif key.startswith("index_"):
             batch = _mapping(batches.get(key))
-            notified = {
-                "sent": "原批次 Telegram 已发送",
-                "failed": "原批次 Telegram 发送失败",
-                "delivery_unknown": "原批次 Telegram 发送结果不确定",
-                "sending": "原批次 Telegram 发送结果待确认",
-                "disabled": "原批次 Telegram 推送未启用",
-                "not_configured": "原批次 Telegram 未配置",
-            }.get(batch.get("notification_status"))
+            notified = _notification_line(batch.get("notification_status"), "原批次")
             if notified:
                 lines.append(notified)
             lines.extend(batch.get("lines") or ["本次批次明细不可用，数据完整性待确认"])
         else:
+            if key == "policy_daily":
+                notified = _notification_line(run.get("notification_status"), "政策日报")
+                if notified:
+                    lines.append(notified)
             if run.get("summary"):
                 lines.append(_plain(run["summary"], 600))
             for item in row.get("data_items") or []:
@@ -310,7 +328,7 @@ def build_task_digest(snapshot, batches=None):
         (
             "",
             "未完成任务按本次检查时刻如实记录，不等待其结束；"
-            "指数完整性以本次批次为准，详细估值沿用原批次推送。",
+            "指数完整性以本次批次为准，详细估值和政策研判沿用各任务原推送。",
         )
     )
     return "\n".join(lines)

@@ -50,11 +50,17 @@ def service(tmp_path):
     launch_dir = home / "Library/LaunchAgents"
     launch_dir.mkdir(parents=True)
     for task in TASKS:
-        hour = 8 if task.id == "erp" else 9 if task.id.endswith("us") else 17
+        hour = {"erp": 8, "policy_daily": 16}.get(task.id, 9 if task.id.endswith("us") else 17)
         scope = (
             ["--market", *task.markets]
             if task.markets
-            else (["run", task.portfolio_key] if task.portfolio_key else [])
+            else (
+                ["run", task.portfolio_key]
+                if task.portfolio_key
+                else ["run"]
+                if task.id == "policy_daily"
+                else []
+            )
         )
         (launch_dir / f"{task.label}.plist").write_bytes(
             plistlib.dumps(
@@ -145,12 +151,14 @@ def portfolio(service, date="2026-10-16", **updates):
 
 def test_installed_schedule_has_real_next_occurrence_and_no_run_or_environment(service):
     data = service.snapshot()
-    assert len(data["tasks"]) == 5
+    assert len(data["tasks"]) == 6
     assert data["checked_at"] == NOW.isoformat()
     by_id = {item["id"]: item for item in data["tasks"]}
     assert by_id["index_asia"]["next_run_at"] == "2026-10-16T17:00:00+08:00"
     assert by_id["index_us"]["next_run_at"] == "2026-10-17T09:00:00+08:00"
     assert by_id["portfolio_us"]["last_run"]["status"] == "never_run"
+    assert by_id["policy_daily"]["last_run"]["status"] == "never_run"
+    assert by_id["policy_daily"]["next_run_at"] == "2026-10-17T16:00:00+08:00"
     assert "must-not-expose" not in json.dumps(data)
 
 
@@ -161,6 +169,93 @@ def test_midnight_schedule_uses_next_day_at_exact_due_time(service):
     path.write_bytes(plistlib.dumps(payload))
     service.now = lambda: datetime(2026, 12, 31, 0, 0, tzinfo=ZONE)
     assert task(service, "erp")["next_run_at"] == "2027-01-01T00:00:00+08:00"
+
+
+def policy_receipt(service, **updates):
+    receipt = {
+        "schema": "policy_execution_v1",
+        "task": "policy_daily",
+        "date": "2026-10-16",
+        "run_id": str(uuid4()),
+        "status": "completed",
+        "started_at": "2026-10-16T15:40:00+08:00",
+        "finished_at": "2026-10-16T15:55:00+08:00",
+        "exit_code": 0,
+        "summary": "已检索主要官方来源，政策影响偏正面。",
+        "result_text": "政策事实：新增资金工具。\n分析判断：有利于流动性；需跟进实施。",
+        "issues": [],
+        "notification": {"status": "sent", "message_ids": [123], "token": "private"},
+    }
+    receipt.update(updates)
+    base = service.root / "data/scheduler/policy-daily"
+    write_json(base / "last-execution.json", receipt)
+    write_json(base / "runs/2026-10-16/state.json", receipt)
+    return receipt
+
+
+def test_policy_reads_matched_receipts_without_raw_model_log_or_notification_secrets(service):
+    receipt = policy_receipt(service)
+    base = service.root / "data/scheduler/policy-daily/runs/2026-10-16"
+    (base / "events.jsonl").write_text("model-private-log")
+    (base / "report.json").write_text("not-a-valid-report")
+    item = task(service, "policy_daily")
+    assert item["last_run"]["status"] == "completed"
+    assert item["last_run"]["result_text"] == receipt["result_text"]
+    assert item["last_run"]["notification_status"] == "sent"
+    assert item["data_items"] == []
+    assert "private" not in json.dumps(item)
+    assert "not-a-valid-report" not in json.dumps(item)
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"task": "erp"},
+        {"schema": "other"},
+        {"date": "2026-10-15"},
+        {"run_id": "invalid-id"},
+        {"started_at": "2026-10-17T16:00:00+08:00"},
+        {"finished_at": "2026-10-16T15:39:00+08:00"},
+        {"finished_at": "2026-10-16T16:01:00+08:00"},
+        {"finished_at": None},
+        {"exit_code": None},
+        {"exit_code": 1},
+        {"summary": ""},
+        {"result_text": ""},
+        {"status": "partial", "exit_code": 0},
+        {"status": "running", "exit_code": None},
+    ],
+)
+def test_invalid_policy_receipt_never_becomes_completed(service, updates):
+    policy_receipt(service, **updates)
+    item = task(service, "policy_daily")
+    assert item["last_run"]["status"] == "unknown"
+    assert item["warnings"]
+    assert task(service, "portfolio_us")["last_run"]["status"] == "never_run"
+
+
+@pytest.mark.parametrize("damage", ["missing", "run_id", "status", "corrupt"])
+def test_policy_last_execution_requires_matching_dated_state(service, damage):
+    receipt = policy_receipt(service)
+    path = service.root / "data/scheduler/policy-daily/runs/2026-10-16/state.json"
+    if damage == "missing":
+        path.unlink()
+    elif damage == "corrupt":
+        path.write_text("broken")
+    else:
+        receipt[damage] = "different"
+        write_json(path, receipt)
+    assert task(service, "policy_daily")["last_run"]["status"] == "unknown"
+
+
+@pytest.mark.parametrize(
+    "status,code", [("partial", 2), ("failed", 1), ("timed_out", 124), ("interrupted", 130)]
+)
+def test_policy_terminal_failure_does_not_reuse_older_success(service, status, code):
+    policy_receipt(service, status=status, exit_code=code, issues=["官方来源未完整取得"])
+    item = task(service, "policy_daily")
+    assert item["last_run"]["status"] == status
+    assert item["last_run"]["issues"] == ["官方来源未完整取得"]
 
 
 def test_erp_queue_is_not_completion_even_when_submit_process_exited_zero(service):
@@ -455,6 +550,7 @@ def test_corrupt_latest_erp_attempt_supersedes_prior_completed_result(service):
     [
         ("index_us", ["--market", "CN", "HK"]),
         ("portfolio_us", ["run", "cn_hk_funds"]),
+        ("policy_daily", ["preview"]),
     ],
 )
 def test_plist_wrong_market_or_portfolio_scope_is_not_attributed(service, key, arguments):
@@ -518,7 +614,7 @@ def test_valid_json_with_invalid_field_types_only_marks_affected_task_unknown(se
         response = client.get("/api/scheduled-tasks")
     assert response.status_code == 200
     tasks = {item["id"]: item for item in response.json()["tasks"]}
-    assert len(tasks) == 5
+    assert len(tasks) == 6
     assert tasks[damaged]["last_run"]["status"] == "unknown"
     assert tasks[damaged]["warnings"]
     for key, expected in {
@@ -550,7 +646,7 @@ def test_metadata_export_does_not_read_database_receipts_or_environment(service)
     queue = queued(service)
     completed(service, queue, result_text="private-result-not-for-snapshot")
     metadata = service.scheduler_metadata()
-    assert len(metadata["tasks"]) == 5
+    assert len(metadata["tasks"]) == 6
     text = json.dumps(metadata)
     assert "must-not-expose" not in text
     assert "private-result-not-for-snapshot" not in text

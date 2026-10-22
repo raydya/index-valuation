@@ -1,4 +1,4 @@
-"""Read-only, bounded views of the five local investment schedules and receipts.
+"""Read-only, bounded views of local investment schedules and receipts.
 
 Execution receipts and current database coverage deliberately remain separate:
 a manual rebuild is not evidence that launchd's last invocation succeeded.
@@ -63,6 +63,13 @@ TASKS = (
         "run_scheduled.py",
         "按美国交易日更新指数点位、PE、隐含 EPS 和估值 band。",
         ("US",),
+    ),
+    Task(
+        "policy_daily",
+        "中国政策日报",
+        "cn.index-valuation.policy-daily",
+        "run_policy_daily.py",
+        "检索中国市场相关政策，区分政策事实与市场影响判断，并保留来源、覆盖限制及推送结果。",
     ),
     Task(
         "index_asia",
@@ -384,6 +391,8 @@ class ScheduledTasks:
                     and arguments != ["--market", *task.markets]
                     or task.portfolio_key
                     and arguments[:2] != ["run", task.portfolio_key]
+                    or task.id == "policy_daily"
+                    and arguments[:1] != ["run"]
                 ):
                     warnings.append("调度命令的市场或持仓范围与任务不匹配")
                     return scheduler, "执行范围待核对", None
@@ -692,6 +701,87 @@ class ScheduledTasks:
             run["summary"] = "结果摘要：" + first_line.lstrip("# ")[:300]
         return run
 
+    def _policy_run(self, warnings):
+        """Read the validated research receipt, never the model's raw execution log."""
+        base = self.root / "data/scheduler/policy-daily"
+        path = base / "last-execution.json"
+        if not path.exists():
+            return _empty_run()
+        execution = _json(path, base, warnings)
+        if execution is None:
+            return _empty_run("unknown", "最新政策执行回执不可读，未采用旧结果代替")
+        try:
+            UUID(execution["run_id"])
+            day = _day(execution["date"])
+            started = _datetime(execution["started_at"])
+            finished = _datetime(execution.get("finished_at"))
+            status = execution["status"]
+            exit_code = _integer(execution.get("exit_code"))
+            now = self.now().astimezone(ZONE)
+            if (
+                execution.get("schema") != "policy_execution_v1"
+                or execution.get("task") != "policy_daily"
+                or status
+                not in {"running", "completed", "partial", "failed", "timed_out", "interrupted"}
+                or started is None
+                or day != started.date().isoformat()
+                or started > now
+                or (
+                    status == "running"
+                    and (execution.get("finished_at") is not None or exit_code is not None)
+                )
+                or (
+                    status != "running"
+                    and (finished is None or not started <= finished <= now or exit_code is None)
+                )
+                or (status == "completed" and exit_code != 0)
+                or (status in {"partial", "failed", "timed_out", "interrupted"} and exit_code == 0)
+                or (
+                    status in {"completed", "partial"}
+                    and (
+                        not _text(execution.get("summary")).strip()
+                        or not _text(execution.get("result_text")).strip()
+                    )
+                )
+            ):
+                raise ValueError("执行状态字段无效")
+            state = _json(base / "runs" / day / "state.json", base, warnings)
+            identity = (
+                "schema",
+                "task",
+                "date",
+                "run_id",
+                "status",
+                "started_at",
+                "finished_at",
+                "exit_code",
+            )
+            if state is None or any(state.get(key) != execution.get(key) for key in identity):
+                raise ValueError("本日执行记录不匹配")
+        except (KeyError, TypeError, ValueError, AttributeError):
+            warnings.append("政策执行回执身份、时间或本日记录不匹配，未作为完成依据")
+            return _empty_run("unknown", "最新政策执行记录无效，未采用旧结果代替")
+        run = _receipt_run(
+            execution, {"running", "completed", "partial", "failed", "timed_out", "interrupted"}
+        )
+        run["date"] = day
+        notification = execution.get("notification")
+        if isinstance(notification, dict):
+            value = notification.get("status")
+            if value in {
+                "sent",
+                "failed",
+                "delivery_unknown",
+                "sending",
+                "disabled",
+                "not_configured",
+                "pending",
+                "not_sent",
+                "skipped",
+            }:
+                run["notification_status"] = value
+        return run
+
     def _erp_execution(self, base, execution, warnings):
         """A process outcome cannot stand in for a matched, verified business result."""
         try:
@@ -907,11 +997,13 @@ class ScheduledTasks:
                     run = self._index_run(task, scheduler, task_warnings, database_ok)
                 elif task.portfolio_key:
                     run = self._portfolio_run(task, task_warnings)
+                elif task.id == "policy_daily":
+                    run = self._policy_run(task_warnings)
                 else:
                     run, items = self._erp_run(task_warnings)
             except Exception:
                 # A syntactically valid JSON receipt can still have invalid field
-                # types. Do not let one damaged task hide the other four tasks.
+                # types. Do not let one damaged task hide the remaining tasks.
                 run = _empty_run("unknown", "本任务执行证据格式无效或暂不可读")
                 task_warnings.append("未采用无效证据判断执行成功；其他任务仍可查看")
             scheduler_running = scheduler["state"] == "running" and run["status"] not in {

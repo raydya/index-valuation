@@ -1,7 +1,7 @@
 # Mac 上的 Docker 网页部署
 
 第一阶段仅将 FastAPI、静态网页及只读查询迁入 Docker。共享 PostgreSQL 由
-`../local-infra` 管理；指数采集、OpenD、富途 REST Keychain、Telegram、ERP 和持仓表任务
+`../local-infra` 管理；指数采集、OpenD、富途 REST Keychain、Telegram、ERP、政策日报和持仓表任务
 继续在 Mac 上运行。网页访问地址仍为 `http://127.0.0.1:8000`。
 
 ## 运行结构
@@ -11,8 +11,9 @@
 | `compose.yaml` 的 `web` | 网页、CSV、估值与任务状态只读查询 |
 | `local-infra` 的 PostgreSQL | 应用专属库和运行/迁移账号，独立备份 |
 | Mac 09:00 / 17:00 的现有 LaunchAgent | 美股 / 中港采集、派生重建和 Telegram |
-| `cn.index-valuation.task-summary` | Mac 每天18:00将五项业务任务的执行结论汇总发送至 Telegram |
-| `cn.index-valuation.schedule-status` | 每 60 秒读取五项任务的 launchd 元数据，供网页展示 |
+| `cn.index-valuation.policy-daily` | Mac 每天16:00检索、总结中国政策并推送 Telegram |
+| `cn.index-valuation.task-summary` | Mac 每天18:00将六项业务任务的执行结论汇总发送至 Telegram |
+| `cn.index-valuation.schedule-status` | 每 60 秒读取六项任务的 launchd 元数据，供网页展示 |
 
 容器通过专用内部网络 `local-infra-index-db`，以 `shared-postgres:5432` 访问 PG。
 宿主采集仍使用 `.env` 的 `127.0.0.1:15432`。本项目 Compose 仅引用 external 网络，
@@ -42,7 +43,7 @@
 
    ```bash
    mkdir -p data/scheduler/host-status data/scheduler/index-runs \
-     data/scheduler/erp-sheet data/scheduled/portfolio-daily logs
+     data/scheduler/erp-sheet data/scheduler/policy-daily data/scheduled/portfolio-daily logs
    ```
 
 6. 首次先在其他端口验证：
@@ -96,7 +97,8 @@ Mac 需要开机、用户登录，Docker Desktop 需要运行。休眠或 Docker
 
 ## 数据保存与验证
 
-网页仅挂载 `host-status`、`index-runs`、`erp-sheet`、`portfolio-daily` 和 `logs`。
+网页仅挂载 `host-status`、`index-runs`、`erp-sheet`、`policy-daily`、`portfolio-daily` 和 `logs`。
+政策日报目录以只读方式挂载，API只读取执行回执和同日状态，不公开原始模型日志。
 CSV 从数据库生成，网页无需挂载全部 `data/raw` / `data/exports` 或通知目录。
 重建/移除网页容器不会删除宿主数据或共享 PG。
 
@@ -115,7 +117,7 @@ WEB_BASE_URL=http://127.0.0.1:18000 PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/playwr
   uv run --locked python scripts/check_scheduled_tasks_web.py
 ```
 
-对比覆盖所有指数 dashboard、CSV、市场汇总、代表日期回看和五项任务。
+对比覆盖所有指数 dashboard、CSV、市场汇总、代表日期回看和六项任务。
 检查报告保存在 `data/exports/docker-migration/`。运行中的任务会产生真实回执差异，
 应核实原因后重取基准，不应把业务时间或数据差异全部忽略。
 数据库集成测试始终使用独立 `_test` 库，不向共享正式库创建测试表。

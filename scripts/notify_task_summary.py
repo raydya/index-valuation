@@ -1,4 +1,4 @@
-"""Preview, send, or retry the frozen daily five-task Telegram summary."""
+"""Preview, send, or retry the frozen daily six-task Telegram summary."""
 
 import argparse
 import json
@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="每天北京时间 18:00 汇总五项定时任务")
+    parser = argparse.ArgumentParser(description="每天北京时间 18:00 汇总六项定时任务")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("preview", help="只读预览当前状态，不发送、不冻结回执")
     commands.add_parser("send", help="冻结今天的任务结论并发送，同一天不重复推送")

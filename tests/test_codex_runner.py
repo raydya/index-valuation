@@ -7,6 +7,37 @@ import pytest
 from index_valuation import codex_runner
 
 
+def test_research_mode_enables_live_search_with_read_only_shell(tmp_path, monkeypatch):
+    commands = []
+
+    class Child:
+        pid = 12345
+        returncode = 0
+
+        def __init__(self, command, **kwargs):
+            commands.append(command)
+            assert not kwargs.get("shell")
+
+        def communicate(self, **_kwargs):
+            pass
+
+    monkeypatch.setattr(codex_runner.subprocess, "Popen", Child)
+    result = codex_runner.execute_codex(
+        root=tmp_path,
+        codex="/codex",
+        prompt="Read only",
+        run_dir=tmp_path,
+        schema=tmp_path / "schema.json",
+        research_only=True,
+    )
+    command = commands[0]
+    assert "--search" in command
+    assert command[command.index("--sandbox") + 1] == "read-only"
+    assert "--approve-for-me" not in command
+    assert "--dangerously-bypass-approvals-and-sandbox" not in command
+    assert result == {"status": "finished", "exit_code": 0}
+
+
 def test_cleanup_kills_a_descendant_that_outlives_the_exited_group_leader(monkeypatch):
     descendant = {"alive": True}
     signals = []

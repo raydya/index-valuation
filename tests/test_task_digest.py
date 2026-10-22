@@ -109,6 +109,63 @@ def test_same_day_queued_erp_is_not_sheet_completion():
     assert "完成（回执已确认回读）" not in text
 
 
+def test_policy_digest_reports_conclusions_and_delivery_without_claiming_sheet_readback():
+    row = task(
+        "policy_daily",
+        status="completed",
+        started_at="2026-10-20T16:00:00+08:00",
+        finished_at="2026-10-20T16:12:00+08:00",
+        summary="已检查主要官方来源，今日没有发现与924相当的综合政策组合。",
+        result_text="局部支持：降低企业融资成本。分析判断：偏正面，传导仍需观察。",
+        notification_status="sent",
+    )
+    row["schedule_text"] = "每天 16:00（北京时间，含周末）"
+    text = build_task_digest(snapshot(row))
+    assert "policy_daily｜计划 16:00" in text
+    assert "实际 16:00–16:12｜完成" in text
+    assert "今日没有发现与924相当" in text
+    assert "偏正面" in text
+    assert "政策日报 Telegram 已发送" in text
+    assert "回读" not in text
+    erp_text = build_task_digest(snapshot(task("erp", status="completed")))
+    assert "完成（回执已确认回读）" in erp_text
+
+
+def test_old_policy_digest_does_not_repeat_prior_conclusion_or_delivery():
+    text = build_task_digest(
+        snapshot(
+            task(
+                "policy_daily",
+                day="2026-10-19",
+                status="completed",
+                summary="旧日政策判断",
+                result_text="旧日分析",
+                notification_status="sent",
+            )
+        )
+    )
+    assert "今日未见执行回执" in text
+    assert "旧日" not in text
+    assert "政策日报 Telegram 已发送" not in text
+    assert "回读" not in text
+
+
+def test_policy_finished_after_midnight_keeps_original_research_date():
+    row = task(
+        "policy_daily",
+        day="2026-10-19",
+        status="completed",
+        date="2026-10-19",
+        started_at="2026-10-19T23:59:00+08:00",
+        finished_at="2026-10-20T00:12:00+08:00",
+        result_text="昨日政策结论",
+    )
+    text = build_task_digest(snapshot(row))
+    assert "今日未见执行回执" in text
+    assert "昨日政策结论" not in text
+    assert "最近记录 10-19 23:59–00:12｜完成" in text
+
+
 def test_portfolio_process_success_quotes_actual_failure_and_gap_conclusions():
     row = task(
         "portfolio_us",
@@ -237,7 +294,7 @@ def test_snapshot_still_works_when_database_is_unavailable(tmp_path):
     result = collect_summary(tmp_path, {}, now=NOW, service=service)
     assert "数据库暂不可读" in result["text"]
     assert "实际 08:13 提交｜已提交队列" in result["text"]
-    assert len(result["snapshot"]["tasks"]) == 5
+    assert len(result["snapshot"]["tasks"]) == 6
     assert not (tmp_path / "data/scheduler/task-summaries").exists()
 
 

@@ -104,7 +104,7 @@ def test_install_refuses_unrelated_task_without_querying_launchd(tmp_path, monke
         installer.install(tmp_path, generated, target_dir, "gui/501")
 
 
-def test_first_install_preserves_five_business_jobs_and_only_bootstraps_summary(
+def test_first_install_preserves_all_business_jobs_and_only_bootstraps_summary(
     tmp_path, monkeypatch
 ):
     generated = prepare(tmp_path)
@@ -116,6 +116,7 @@ def test_first_install_preserves_five_business_jobs_and_only_bootstraps_summary(
             "cn.index-valuation.daily.asia",
             "cn.index-valuation.daily.us",
             "cn.index-valuation.erp-sheet",
+            "cn.index-valuation.policy-daily",
             "cn.portfolio.quotes.daily.asia",
             "cn.portfolio.quotes.daily.us",
         )
