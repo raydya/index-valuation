@@ -19,11 +19,11 @@
   <main>
     <div id="error" role="alert" hidden><span id="error-text"></span><button id="retry" type="button">重新读取</button></div>
     <section id="market-overview" class="market-overview" aria-labelledby="market-overview-title" aria-busy="true">
-      <div class="market-overview-heading"><div><h2 id="market-overview-title">指数现状总结</h2><p>全部指数的最新数据；下方切换历史估值日期不改变这里的判断。</p></div><button type="button" id="market-overview-refresh" disabled>正在读取…</button></div>
+      <div class="market-overview-heading"><div><h2 id="market-overview-title">指数现状总结</h2><p>按实际数据日期分组；点击指数查看估值图，下方历史回看不改变这里的判断。</p></div><button type="button" id="market-overview-refresh" disabled>正在读取…</button></div>
       <div class="market-overview-status"><p id="market-overview-counts" aria-live="polite">正在读取各指数现状…</p><span id="market-overview-stamp">尚未读取</span></div>
       <p id="market-overview-error" class="market-overview-error" role="alert" hidden></p>
       <div id="market-overview-groups"><p class="market-overview-empty">正在读取最新 PE 和估值线…</p></div>
-      <details class="market-overview-rule"><summary>判断规则与颜色说明</summary><div><p id="market-overview-rule-text">同一方法、同一来源口径的此前5年有效 PE：P10 为恐慌线，P90 为贪婪线；排除当天、未来及发布前回溯数据。</p><ul><li><span class="market-dot market-dot-panic" aria-hidden="true"></span>绿灯：恐慌，持续买入（PE ≤ 恐慌线）</li><li><span class="market-dot market-dot-normal" aria-hidden="true"></span>黄灯：普通，继续持有（两条线之间）</li><li><span class="market-dot market-dot-greed" aria-hidden="true"></span>红灯：贪婪，减仓离场（PE ≥ 贪婪线）</li><li><span class="market-dot market-dot-unknown" aria-hidden="true"></span>灰灯：暂无判断，缺失、短历史或暂停采集时保留原因</li></ul><p>每项显示自身实际数据日期；PE 盈利期间、加权和亏损处理以各自来源说明为准。</p></div></details>
+      <details class="market-overview-rule"><summary>判断规则与颜色说明</summary><div><p id="market-overview-rule-text">同一方法、同一来源口径的此前5年有效 PE：P10 为恐慌线，P90 为贪婪线；排除当天、未来及发布前回溯数据。</p><ul><li><span class="market-dot market-dot-panic" aria-hidden="true"></span>绿灯：恐慌，持续买入（PE ≤ 恐慌线）</li><li><span class="market-dot market-dot-normal" aria-hidden="true"></span>黄灯：普通，继续持有（两条线之间）</li><li><span class="market-dot market-dot-greed" aria-hidden="true"></span>红灯：贪婪，减仓离场（PE ≥ 贪婪线）</li><li><span class="market-dot market-dot-unknown" aria-hidden="true"></span>灰灯：暂无判断，缺失、短历史或暂停采集时保留原因</li></ul><p>历史分位固定使用此前五年内的同口径有效 PE，达到最少样本数后展示；历史不足五年时仍可有分位，恐慌与贪婪判断另需满足完整五年跨度。分位颜色跟随估值状态。</p><p>表格标题为实际数据日期；PE 盈利期间、加权和亏损处理以各自来源说明为准。</p></div></details>
     </section>
     <section class="overview" aria-labelledby="index-title">
       <div class="heading-row"><div><div class="security-code" id="code">—</div><h1 id="index-title">指数估值</h1><p id="benchmark-note" hidden></p></div><div class="data-stamp"><span class="status-dot"></span><span id="data-stamp">正在读取历史数据</span></div></div>

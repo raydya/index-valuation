@@ -11,7 +11,13 @@ METHOD = "published_weight_ttm_v1"
 def quantile(values: list[Decimal], probability: Decimal) -> Decimal:
     if not values or not Decimal(0) <= probability <= Decimal(1):
         raise ValueError("Quantile requires values and a probability between zero and one")
-    values = sorted(values)
+    return quantile_sorted(sorted(values), probability)
+
+
+def quantile_sorted(values: list[Decimal], probability: Decimal) -> Decimal:
+    """Interpolate an already sorted sample without copying or sorting it again."""
+    if not values or not Decimal(0) <= probability <= Decimal(1):
+        raise ValueError("Quantile requires values and a probability between zero and one")
     position = Decimal(len(values) - 1) * probability
     lower = int(position)
     upper = min(lower + 1, len(values) - 1)

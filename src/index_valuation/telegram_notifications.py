@@ -91,7 +91,7 @@ class TelegramClient:
 
     def _call(self, method, payload=None):
         _redact_http_logs()
-        sending = method == "sendMessage"
+        sending = method in {"sendMessage", "sendRichMessage"}
         try:
             response = self._client.post(self._base + "/" + method, json=payload or {})
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
@@ -164,6 +164,14 @@ class TelegramClient:
             "sendMessage",
             {"chat_id": chat_id, "text": text, "link_preview_options": {"is_disabled": True}},
         )
+        return self._sent_id(result, chat_id)
+
+    def send_rich(self, chat_id, rich_message):
+        result = self._call("sendRichMessage", {"chat_id": chat_id, "rich_message": rich_message})
+        return self._sent_id(result, chat_id)
+
+    @staticmethod
+    def _sent_id(result, chat_id):
         if (
             not isinstance(result, dict)
             or not isinstance(result.get("message_id"), int)
@@ -219,7 +227,7 @@ def delivery_lock(path):
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def deliver(settings, text, path, *, client_factory=TelegramClient):
+def deliver(settings, text, path, *, rich_message=None, client_factory=TelegramClient):
     """One receipt per batch; confirmed parts never repeat. Ambiguous sends require review."""
     if not settings.telegram_enabled:
         return {"status": "disabled"}
@@ -228,8 +236,16 @@ def deliver(settings, text, path, *, client_factory=TelegramClient):
     fingerprint = hashlib.sha256(
         f"{settings.telegram_bot_token.get_secret_value()}:{settings.telegram_chat_id}".encode()
     ).hexdigest()
-    digest = hashlib.sha256(text.encode()).hexdigest()
-    parts = split_message(text)
+    # Keep legacy text hashes unchanged; rich receipts freeze both content and layout.
+    content = (
+        text
+        if rich_message is None
+        else json.dumps(
+            {"text": text, "rich_message": rich_message}, ensure_ascii=False, sort_keys=True
+        )
+    )
+    digest = hashlib.sha256(content.encode()).hexdigest()
+    parts = split_message(text) if rich_message is None else [rich_message]
     with delivery_lock(path):
         if path.exists():
             state = json.loads(path.read_text(encoding="utf-8"))
@@ -248,6 +264,7 @@ def deliver(settings, text, path, *, client_factory=TelegramClient):
                 "destination_hash": fingerprint,
                 "message_ids": [],
                 "parts": len(parts),
+                **({"rich_message": rich_message} if rich_message is not None else {}),
             }
             save_json(path, state)
         client = client_factory(settings)
@@ -258,7 +275,11 @@ def deliver(settings, text, path, *, client_factory=TelegramClient):
                     time.sleep(1)
                 state.update(status="sending", attempted_at=datetime.now(UTC).isoformat())
                 save_json(path, state)
-                message_id = client.send(settings.telegram_chat_id, part)
+                message_id = (
+                    client.send(settings.telegram_chat_id, part)
+                    if rich_message is None
+                    else client.send_rich(settings.telegram_chat_id, part)
+                )
                 state["message_ids"].append(message_id)
                 state["status"] = "pending"
                 save_json(path, state)
@@ -276,7 +297,7 @@ def deliver(settings, text, path, *, client_factory=TelegramClient):
 
 def notify_scheduled(root, receipt, journal_path):
     """Independent of PostgreSQL/web availability, including failed collector processes."""
-    from index_valuation.notification_digest import build_digest
+    from index_valuation.notification_digest import build_notification
     from index_valuation.registry import load_indices
     from index_valuation.run_journal import read_reports
 
@@ -287,11 +308,10 @@ def notify_scheduled(root, receipt, journal_path):
         reports = read_reports(journal_path, receipt["batch_id"])
     except (OSError, ValueError):
         reports = []
-        receipt = {**receipt, "journal_status": "unreadable"}
     specs = load_indices(root / "indices.toml")
-    text = build_digest(specs, receipt, reports)
-    if receipt.get("journal_status") == "unreadable":
-        text = "本轮批次明细读取失败，逐指数结果无法核对。\n\n" + text
+    message = build_notification(specs, receipt, reports)
+    if not message["text"]:
+        return {"status": "skipped", "error": "no_matching_indices"}
     path = root / "data/scheduler/notifications" / f"{receipt['batch_id']}.json"
-    state = deliver(settings, text, path)
+    state = deliver(settings, message["text"], path, rich_message=message["rich_message"])
     return {key: state[key] for key in ("status", "message_ids", "error") if key in state}

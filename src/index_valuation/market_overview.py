@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 
+from index_valuation.domain import decimal_or_none
 from index_valuation.index_series import basis_note, method_for, valuation_profile
 from index_valuation.panic_lines import (
     GREED_PROBABILITY,
@@ -27,6 +28,34 @@ REASONS = {
     "flat_distribution": "恐慌与贪婪阈值相同，无法区分估值区间",
     "not_calculated": "最新数据尚未计算双线，请重建当前方法",
 }
+
+
+def historical_percentile(spec, point):
+    """Read the dashboard's past-only rank, using the notification eligibility rules.
+
+    A rank may exist before five elapsed years if the configured sample minimum
+    is met. It is independent of the stricter panic/greed signal requirements.
+    Never substitute a signal threshold probability or its sample count.
+    """
+    profile = valuation_profile(spec)
+    pe = decimal_or_none(point.get("pe"))
+    percentile = decimal_or_none(point.get("percentile"))
+    count = point.get("history_count")
+    usable = (
+        spec.collection_enabled
+        and point.get("method", method_for(spec)) == method_for(spec)
+        and point.get("pe_source") == profile["source"]
+        and point.get("pe_basis") == profile["basis"]
+        and point.get("pe_usable", True)
+        and pe is not None
+        and pe > 0
+        and percentile is not None
+        and 0 <= percentile <= 100
+        and isinstance(count, int)
+        and not isinstance(count, bool)
+        and count >= spec.band_min_observations
+    )
+    return percentile if usable else None
 
 
 def build_market_overview(specs, points):
@@ -84,6 +113,7 @@ def build_market_overview(specs, points):
                 "as_of": point.get("trade_date"),
                 "price": point.get("price"),
                 "pe": point.get("pe"),
+                "percentile": historical_percentile(spec, point),
                 "signal": signal,
                 "label": label,
                 "action": action,

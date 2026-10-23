@@ -41,7 +41,9 @@ async function load() {
   $('panic-live-section').hidden = true;
   $('panic-section').hidden = true;
   try {
-    const response = await fetch(`/api/indices/${encodeURIComponent(state.index)}/dashboard?${parameters()}`, { signal: request.signal });
+    const params = parameters();
+    params.set('view', 'chart');
+    const response = await fetch(`/api/indices/${encodeURIComponent(state.index)}/dashboard?${params}`, { signal: request.signal });
     const data = await response.json();
     if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '参数无效，请调整日期或区间。');
     if (request !== state.request) return;

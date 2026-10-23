@@ -4,6 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
+from typing import Literal
 
 from alembic.script import ScriptDirectory
 from alembic.util.exc import CommandError
@@ -30,6 +31,7 @@ from index_valuation.panic_reference import load_panic_reference, panic_referenc
 from index_valuation.registry import load_indices
 from index_valuation.repository import Repository
 from index_valuation.scheduled_tasks import ScheduledTasks
+from index_valuation.web_payload import chart_json
 
 WEB = Path(__file__).with_name("web")
 log = logging.getLogger(__name__)
@@ -147,7 +149,11 @@ def create_app(*, repository=None, specs=None, settings=None, scheduled_tasks=No
     @app.get("/api/market-overview")
     def get_market_overview():
         return Response(
-            json_text(build_market_overview(specs, repository.latest_index_points(specs))),
+            json_text(
+                build_market_overview(
+                    specs, repository.latest_index_points(specs, include_statistics=True)
+                )
+            ),
             media_type="application/json",
         )
 
@@ -224,9 +230,11 @@ def create_app(*, repository=None, specs=None, settings=None, scheduled_tasks=No
         as_of: date | None = None,
         chart_years: int = Query(5, ge=0, le=10),
         history_years: int = Query(5, ge=0, le=10),
+        view: Literal["full", "chart"] = "full",
     ):
+        data = dashboard(key, as_of, chart_years, history_years)
         return Response(
-            json_text(dashboard(key, as_of, chart_years, history_years)),
+            chart_json(data) if view == "chart" else json_text(data),
             media_type="application/json",
         )
 

@@ -1,8 +1,7 @@
 """Direct index valuation: provenance, same-day earnings, and past-only bands."""
 
 import csv
-from bisect import bisect_left, bisect_right, insort
-from collections import Counter, deque
+from collections import Counter
 from datetime import datetime, time
 from decimal import Decimal
 from io import StringIO
@@ -10,11 +9,11 @@ from zoneinfo import ZoneInfo
 
 from index_valuation.archive import json_text
 from index_valuation.domain import DataError
+from index_valuation.pe_statistics import PEHistory, years_before
 from index_valuation.performance import price_return_summary, total_return_summary
 from index_valuation.providers.yahoo_etf_valuation import METRIC as ETF_PE_METRIC
 from index_valuation.providers.yahoo_etf_valuation import basis_for as etf_pe_basis
 from index_valuation.quality import compare_value
-from index_valuation.valuation import quantile
 
 METHOD = "futu_index_implied_v1"
 QUANTILES = tuple(Decimal(p) for p in ("0.1", "0.25", "0.5", "0.75", "0.9"))
@@ -354,13 +353,31 @@ def derive_points(spec, observations, valuations):
     return points
 
 
-def years_before(day, years):
-    if not years:
-        return day.min
-    try:
-        return day.replace(year=day.year - years)
-    except ValueError:
-        return day.replace(year=day.year - years, day=28)
+def latest_pe_statistics(spec, points, *, history_years=5):
+    """Calculate only the latest rank, using the chart's same past-only samples."""
+    if history_years not in {0, 3, 5, 10}:
+        raise DataError("Unsupported history window")
+    if not points:
+        return {}
+    points = sorted(points, key=lambda row: row["trade_date"])
+    history = PEHistory(
+        years=history_years,
+        minimum=spec.band_min_observations,
+        weekly=valuation_profile(spec)["history_frequency"] == "weekly",
+    )
+    for point in points[:-1]:
+        history.advance(point["trade_date"])
+        history.observe(point["trade_date"], point["pe"], point.get("pe_usable", True))
+    selected = points[-1]
+    history.advance(selected["trade_date"])
+    usable = selected.get("pe_usable", True)
+    return {
+        "trade_date": selected["trade_date"],
+        "pe": selected["pe"],
+        "pe_usable": usable,
+        "percentile": history.percentile(selected["pe"], usable),
+        "history_count": history.count,
+    }
 
 
 def build_dashboard(
@@ -385,39 +402,23 @@ def build_dashboard(
     return_by_date = (
         {row["trade_date"]: row for row in return_points} if spec.collection_enabled else {}
     )
-    history, queue, series = [], deque(), []
-    weekly = valuation_profile(spec)["history_frequency"] == "weekly"
-    pending_week = None
-    history_total = Decimal(0)
+    history = PEHistory(
+        years=history_years,
+        minimum=spec.band_min_observations,
+        weekly=valuation_profile(spec)["history_frequency"] == "weekly",
+    )
+    series = []
     latest_bands = None
     for point in eligible:
         day, pe, eps = point["trade_date"], point["pe"], point["implied_eps"]
-        if weekly and pending_week and pending_week[0].isocalendar()[:2] != day.isocalendar()[:2]:
-            old_day, old_pe = pending_week
-            insort(history, old_pe)
-            queue.append((old_day, old_pe))
-            history_total += old_pe
-            pending_week = None
-        lower = years_before(day, history_years)
-        while queue and queue[0][0] < lower:
-            _, old = queue.popleft()
-            history.pop(bisect_left(history, old))
-            history_total -= old
-        enough = len(history) >= spec.band_min_observations
-        mean_pe = history_total / len(history) if enough else None
+        lower = history.advance(day)
+        statistics = history.summary(
+            pe, point.get("pe_usable", True), probabilities=QUANTILES if day >= chart_start else ()
+        )
+        mean_pe, quantiles = statistics["mean_pe"], statistics["quantile_pe"]
         # Earlier PE is useful even on a day whose price / EPS is missing.
         positive_pe = pe is not None and pe > 0 and point.get("pe_usable", True)
         usable_eps = eps is not None and eps > 0 and positive_pe
-        quantiles = (
-            {str(q): quantile(history, q) for q in QUANTILES}
-            if enough and day >= chart_start
-            else {}
-        )
-        percentile = (
-            Decimal(bisect_left(history, pe) + bisect_right(history, pe)) / 2 / len(history) * 100
-            if enough and positive_pe
-            else None
-        )
         bands = {
             "fixed": {str(m): eps * m for m in spec.band_multiples} if usable_eps else {},
             "mean_pe": mean_pe,
@@ -426,14 +427,14 @@ def build_dashboard(
             "quantile_points": {key: eps * value for key, value in quantiles.items()}
             if usable_eps
             else {},
-            "percentile": percentile,
-            "history_count": len(history),
+            "percentile": statistics["percentile"],
+            "history_count": statistics["history_count"],
             # This flags a short available span, not missing individual sessions.
             "history_span_short": bool(
                 history_years and (first_pe_date is None or first_pe_date > lower)
             ),
-            "history_start": queue[0][0] if queue else None,
-            "history_end": queue[-1][0] if queue else None,
+            "history_start": statistics["history_start"],
+            "history_end": statistics["history_end"],
         }
         if day >= chart_start:
             series.append(
@@ -477,13 +478,7 @@ def build_dashboard(
                 }
             )
         latest_bands = bands
-        if positive_pe:
-            if weekly:
-                pending_week = (day, pe)
-            else:
-                insort(history, pe)
-                queue.append((day, pe))
-                history_total += pe
+        history.observe(day, pe, point.get("pe_usable", True))
     price_summary = price_return_summary(eligible, chart_start, selected["trade_date"])
     # The total-return reader may have a longer archive than the price chart.
     # "All history" still means the visible price range, not unseen TR history.

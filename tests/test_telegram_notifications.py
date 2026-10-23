@@ -62,6 +62,33 @@ def test_api_plain_text_private_delivery_and_receipt():
     assert len(requests) == 2
 
 
+def test_api_sends_native_table_and_validates_message_receipt():
+    rich_message = {"blocks": [{"type": "table", "cells": []}]}
+
+    def handler(request):
+        assert request.url.path.endswith("/sendRichMessage")
+        assert json.loads(request.content) == {"chat_id": 123, "rich_message": rich_message}
+        return httpx.Response(
+            200, json={"ok": True, "result": {"message_id": 7, "chat": {"id": 123}}}
+        )
+
+    assert client(handler).send_rich(123, rich_message) == 7
+
+
+@pytest.mark.parametrize("failure", ["timeout", "server_error", "invalid_receipt"])
+def test_rich_send_uncertain_outcomes_are_not_treated_as_safe_to_retry(failure):
+    def handler(request):
+        if failure == "timeout":
+            raise httpx.ReadTimeout("timeout", request=request)
+        if failure == "server_error":
+            return httpx.Response(503, json={"ok": False, "error_code": 503})
+        return httpx.Response(200, json={"ok": True, "result": {"chat": {"id": 123}}})
+
+    with pytest.raises(TelegramError) as error:
+        client(handler).send_rich(123, {"blocks": []})
+    assert error.value.uncertain is True
+
+
 def test_http_info_and_debug_logs_redact_bot_token(caplog):
     caplog.set_level(logging.DEBUG)
     api = client(lambda _: httpx.Response(200, json={"ok": True, "result": {"is_bot": True}}))
@@ -169,6 +196,9 @@ class FakeClient:
         self.sent.append(text)
         return len(self.sent)
 
+    def send_rich(self, chat_id, rich_message):
+        return self.send(chat_id, rich_message)
+
     def close(self):
         pass
 
@@ -212,11 +242,89 @@ def test_changed_content_or_recipient_cannot_reuse_batch_receipt(tmp_path):
     assert len(api.sent) == 1
 
 
+def test_rich_delivery_freezes_table_and_does_not_repeat_or_accept_changed_layout(tmp_path):
+    api = FakeClient()
+    path = tmp_path / "receipt.json"
+    rich = {"blocks": [{"type": "table", "cells": [[{"text": "指数"}]]}]}
+    result = deliver(settings(), "指数", path, rich_message=rich, client_factory=lambda _: api)
+    assert result["status"] == "sent"
+    assert json.loads(path.read_text())["rich_message"] == rich
+    assert api.sent == [rich]
+    assert (
+        deliver(settings(), "指数", path, rich_message=rich, client_factory=lambda _: api)["status"]
+        == "sent"
+    )
+    changed = {"blocks": [{"type": "table", "cells": [[{"text": "指数"}]], "is_compact": True}]}
+    assert (
+        deliver(settings(), "指数", path, rich_message=changed, client_factory=lambda _: api)[
+            "status"
+        ]
+        == "conflict"
+    )
+    assert deliver(settings(), "指数", path, client_factory=lambda _: api)["status"] == "conflict"
+    assert api.sent == [rich]
+
+
+def test_unknown_rich_delivery_is_not_retried_or_fallen_back_to_plain_text(tmp_path):
+    api = FakeClient({1: TelegramError("transport_error", uncertain=True)})
+    path = tmp_path / "receipt.json"
+    rich = {"blocks": [{"type": "table", "cells": []}]}
+    for _ in range(2):
+        result = deliver(settings(), "指数", path, rich_message=rich, client_factory=lambda _: api)
+        assert result["status"] == "delivery_unknown"
+    assert api.attempts == 1
+
+
 def test_disabled_notifications_do_not_touch_network(tmp_path):
     disabled = settings().model_copy(update={"telegram_enabled": False})
     assert deliver(
         disabled, "test", tmp_path / "r.json", client_factory=lambda _: pytest.fail("network")
     ) == {"status": "disabled"}
+
+
+def test_scheduled_notification_keeps_unknown_date_separate_when_journal_is_unreadable(
+    tmp_path, monkeypatch
+):
+    from index_valuation import registry, telegram_notifications
+    from index_valuation.domain import IndexSpec
+
+    spec = IndexSpec("test", "沪深300", "000300", "SH.000300")
+    monkeypatch.setattr(telegram_notifications, "TelegramSettings", lambda **kwargs: settings())
+    monkeypatch.setattr(registry, "load_indices", lambda path: {spec.key: spec})
+    seen = []
+
+    def capture(settings, text, path, *, rich_message):
+        seen.append(text)
+        assert rich_message["blocks"][0]["text"] == "指数估值：暂无"
+        assert [cell["text"] for cell in rich_message["blocks"][1]["cells"][1]] == [
+            "沪深300",
+            "暂无",
+            "暂无",
+            "暂无判断",
+        ]
+        return {"status": "sent", "message_ids": [1]}
+
+    monkeypatch.setattr(telegram_notifications, "deliver", capture)
+    journal = tmp_path / "broken.jsonl"
+    journal.write_text("invalid-json\n")
+    receipt = {"batch_id": "batch-1", "markets": ["CN"], "journal_status": "unreadable"}
+    assert telegram_notifications.notify_scheduled(tmp_path, receipt, journal)["status"] == "sent"
+    assert seen == ["指数估值：暂无\n沪深300 暂无 暂无 暂无判断"]
+
+
+def test_scheduled_notification_skips_empty_market_without_sending(tmp_path, monkeypatch):
+    from index_valuation import registry, telegram_notifications
+
+    monkeypatch.setattr(telegram_notifications, "TelegramSettings", lambda **kwargs: settings())
+    monkeypatch.setattr(registry, "load_indices", lambda path: {})
+    monkeypatch.setattr(telegram_notifications, "deliver", lambda *args: pytest.fail("delivery"))
+    receipt = {"batch_id": "batch-1", "markets": ["CN"]}
+    assert telegram_notifications.notify_scheduled(
+        tmp_path, receipt, tmp_path / "missing.jsonl"
+    ) == {
+        "status": "skipped",
+        "error": "no_matching_indices",
+    }
 
 
 def test_notification_receipt_failure_does_not_change_collection_exit(tmp_path, monkeypatch):

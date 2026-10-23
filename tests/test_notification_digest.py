@@ -9,7 +9,7 @@ import pytest
 from index_valuation.archive import json_text
 from index_valuation.domain import IndexSpec
 from index_valuation.index_series import method_for
-from index_valuation.notification_digest import build_digest
+from index_valuation.notification_digest import build_digest, build_notification
 from index_valuation.panic_lines import enrich_panic_lines
 
 SPEC = IndexSpec("test", "沪深300", "000300", "SH.000300", band_min_observations=2)
@@ -76,16 +76,15 @@ def digest(report=None, *, specs=None, receipt=None):
     )
 
 
-@pytest.mark.parametrize(("pe", "label"), [("11", "恐慌"), ("15", "普通"), ("19", "贪婪")])
-def test_frozen_report_reuses_inclusive_signal_rules_without_trade_instructions(pe, label):
+@pytest.mark.parametrize(
+    ("pe", "label", "rank"),
+    [("11", "🟢 恐慌", "🟢 50.0%"), ("15", "普通", "50.0%"), ("19", "🔴 贪婪", "🔴 50.0%")],
+)
+def test_frozen_report_reuses_inclusive_signal_rules_without_trade_instructions(pe, label, rank):
     report = make_report(pe)
     before = deepcopy(report)
     text = digest(report)
-    assert "已覆盖目标交易日" in text
-    assert f"PE {pe}.00" in text and "历史分位 50.0%" in text
-    assert f"估值状态：{label}（P10 11.00 / P90 19.00）" in text
-    assert "01-02 17:00 → 01-02 17:05" in text
-    assert not any(word in text for word in ("持续买入", "继续持有", "减仓离场"))
+    assert text == f"指数估值：2024-01-02\n沪深300 {pe}.00 {rank} {label}"
     assert report == before
 
 
@@ -93,13 +92,10 @@ def test_exit_zero_and_collected_do_not_turn_old_data_into_latest_success():
     report = make_report("10")
     report["collection"]["last_session"]["date"] = "2024-01-03"
     text = digest(report)
-    assert "落后目标交易日 2024-01-03" in text
-    assert "截至 2024-01-02 历史状态：恐慌" in text
-    assert "已覆盖目标交易日" not in text
-    assert "主源PE本轮截至 2024-01-02" in text
+    assert text == "指数估值：2024-01-02\n沪深300 10.00 🟢 50.0% 🟢 恐慌"
 
 
-def test_unused_sources_and_nonprimary_pe_capabilities_are_not_reported_as_outages():
+def test_source_details_do_not_add_extra_commentary():
     report = make_report()
     report["collection"]["sources"].update(
         {
@@ -110,35 +106,100 @@ def test_unused_sources_and_nonprimary_pe_capabilities_are_not_reported_as_outag
         }
     )
     text = digest(report)
-    assert "Nasdaq 官方价格缺" not in text
-    assert "FREDPE缺" not in text
-    assert "富途 OpenDPE缺 3 个交易日" in text
-    assert "FRED价格缺 2 个交易日" in text
+    assert text == "指数估值：2024-01-02\n沪深300 15.00 50.0% 普通"
 
 
 def test_expected_date_comes_from_trading_calendar_not_requested_end():
     report = make_report()
     report["collection"]["end"] = "2024-01-07"
     text = digest(report)
-    assert "已覆盖目标交易日" in text
-    assert "落后目标" not in text
+    assert text == "指数估值：2024-01-02\n沪深300 15.00 50.0% 普通"
 
 
-def test_missing_calendar_keeps_freshness_unknown_even_with_complete_data():
+def test_missing_calendar_preserves_actual_date_without_asserting_freshness():
     report = make_report()
     report["collection"].pop("last_session")
     text = digest(report)
-    assert "交易日历目标缺失，新鲜度未知" in text
-    assert "截至 2024-01-02 历史状态：普通" in text
-    assert "已覆盖目标交易日" not in text
+    assert text == "指数估值：2024-01-02\n沪深300 15.00 50.0% 普通"
 
 
 def test_missing_report_has_no_completion_evidence_and_market_scope_is_respected():
     us = replace(SPEC, key="us", name="标普500", quote_code="US.SPX")
     text = digest(specs={SPEC.key: SPEC, us.key: us})
-    assert "沪深300｜本轮无完成证据" in text
-    assert "标普500" not in text
-    assert "PE 15" not in text
+    assert text == "指数估值：暂无\n沪深300 暂无 暂无 暂无判断"
+
+
+def test_multiple_indices_share_one_date_heading():
+    other = replace(SPEC, key="other", name="第二指数", quote_code="HK.TEST")
+    other_report = make_report("19")
+    other_report["index"] = other.key
+    text = build_digest({SPEC.key: SPEC, other.key: other}, RECEIPT, [make_report(), other_report])
+    assert text == "指数估值：2024-01-02\n沪深300 15.00 50.0% 普通\n第二指数 19.00 🔴 50.0% 🔴 贪婪"
+
+
+def test_no_matching_market_has_no_message():
+    assert digest(make_report(), receipt={**RECEIPT, "markets": []}) == ""
+    assert build_notification({SPEC.key: SPEC}, {**RECEIPT, "markets": []}, []) == {
+        "text": "",
+        "rich_message": None,
+    }
+
+
+def test_rich_table_shares_validated_values_and_keeps_index_names_in_one_cell():
+    spec = replace(SPEC, name="沪深 300 <指数>")
+    message = build_notification({spec.key: spec}, RECEIPT, [make_report("11")])
+    blocks = message["rich_message"]["blocks"]
+    assert len(blocks) == 2
+    assert blocks[0] == {"type": "heading", "size": 3, "text": "指数估值：2024-01-02"}
+    table = blocks[1]
+    assert table["type"] == "table"
+    assert table["is_bordered"] and table["is_striped"] and table["is_compact"]
+    header, row = table["cells"]
+    assert [cell["text"] for cell in header] == ["指数", "PE", "历史分位", "估值状态"]
+    assert all(cell["is_header"] for cell in header)
+    assert [cell["text"] for cell in row] == [
+        "沪深 300 <指数>",
+        "11.00",
+        "🟢 50.0%",
+        "🟢 恐慌",
+    ]
+    assert row[1]["align"] == row[2]["align"] == "right"
+    assert " ".join(cell["text"] for cell in row) == message["text"].splitlines()[1]
+
+
+def test_mixed_or_unknown_dates_are_never_placed_under_another_data_date():
+    older = replace(SPEC, key="older", name="旧日期指数")
+    paused = replace(SPEC, key="paused", name="暂停指数", collection_enabled=False)
+    old_report = make_report()
+    old_report["index"] = older.key
+    old_report["latest"]["trade_date"] = "2024-01-01"
+    message = build_notification(
+        {SPEC.key: SPEC, older.key: older, paused.key: paused},
+        RECEIPT,
+        [make_report(), old_report],
+    )
+    blocks = message["rich_message"]["blocks"]
+    assert [block["type"] for block in blocks] == ["heading", "table"] * 3
+    assert [block["text"] for block in blocks[::2]] == [
+        "指数估值：2024-01-02",
+        "指数估值：2024-01-01",
+        "指数估值：暂无",
+    ]
+    assert [block["cells"][1][0]["text"] for block in blocks[1::2]] == [
+        "沪深300",
+        "旧日期指数",
+        "暂停指数",
+    ]
+    assert all(len(row) == 4 for block in blocks[1::2] for row in block["cells"])
+
+
+def test_color_uses_the_validated_signal_and_never_marks_missing_rank():
+    report = make_report("19")
+    report["latest"]["percentile"] = None
+    assert digest(report) == "指数估值：2024-01-02\n沪深300 19.00 暂无 🔴 贪婪"
+    report = make_report("15")
+    report["latest"]["percentile"] = "99"
+    assert digest(report) == "指数估值：2024-01-02\n沪深300 15.00 99.0% 普通"
 
 
 @pytest.mark.parametrize("has_report", [False, True])
@@ -148,10 +209,7 @@ def test_paused_index_does_not_show_archived_valuation_signal(has_report):
     if report:
         report["status"] = "blocked"
     text = digest(report, specs={spec.key: spec})
-    assert "采集暂停" in text
-    assert "本轮已记录暂停" in text if has_report else "本轮无完成证据" in text
-    assert "PE 10" not in text
-    assert "估值状态：恐慌" not in text
+    assert text == "指数估值：暂无\n沪深300 暂无 暂无 暂无判断"
 
 
 @pytest.mark.parametrize("change", ["method", "date", "source", "threshold", "signal", "top"])
@@ -173,22 +231,21 @@ def test_inconsistent_signal_is_never_republished_as_a_valuation_conclusion(chan
     else:
         report["valuation_signal"]["pe"] = "99"
     text = digest(report)
-    assert "估值状态：暂无判断" in text
-    assert "估值状态：恐慌" not in text and "估值状态：贪婪" not in text
+    assert text.split()[-1] == "暂无判断"
+    assert len(text.splitlines()) == 2
+    assert "🟢" not in text and "🔴" not in text
 
 
-def test_short_history_has_no_signal_but_available_rank_has_an_explicit_caveat():
+def test_short_history_preserves_available_rank_without_adding_explanations():
     report = make_report()
     for detail in (report["latest"]["valuation_signal"], report["valuation_signal"]):
         detail.update(status="insufficient_history", signal="unknown", history_complete=False)
     report["latest"]["history_span_short"] = True
     text = digest(report)
-    assert "历史分位 50.0%（样本区间不足）" in text
-    assert "估值状态：暂无判断" in text
-    assert "五年跨度及最少样本要求" in text
+    assert text == "指数估值：2024-01-02\n沪深300 15.00 50.0% 暂无判断"
 
 
-def test_source_ok_with_missing_sessions_and_total_return_failure_are_reported_safely():
+def test_source_and_total_return_failures_stay_out_of_the_notification():
     report = make_report()
     report["collection"]["sources"]["futu_pe"].update(missing_sessions=3)
     report["collection"]["sources"]["csindex_pe"] = {
@@ -202,11 +259,7 @@ def test_source_ok_with_missing_sessions_and_total_return_failure_are_reported_s
         "sources": {"csindex": {"status": "failed", "error": "PRIVATE_TOKEN"}},
     }
     text = digest(report)
-    assert "富途 OpenDPE缺 3 个交易日" in text
-    assert "中证官方PE请求失败" in text
-    assert "分红再投资采集失败" in text
-    assert "全收益：中证官方请求失败" in text
-    assert "PRIVATE_TOKEN" not in text and "/Users/" not in text
+    assert text == "指数估值：2024-01-02\n沪深300 15.00 50.0% 普通"
 
 
 def test_missing_eps_does_not_hide_valid_pe_signal():
@@ -214,24 +267,32 @@ def test_missing_eps_does_not_hide_valid_pe_signal():
     report["latest"]["implied_eps"] = None
     report["latest_complete_date"] = "2024-01-01"
     text = digest(report)
-    assert "估值状态：恐慌" in text
-    assert "EPS/band 完整至 2024-01-01" in text
+    assert text == "指数估值：2024-01-02\n沪深300 10.00 🟢 50.0% 🟢 恐慌"
 
 
 def test_timeout_and_failed_reports_do_not_fall_back_to_other_results():
     receipt = {**RECEIPT, "status": "timed_out", "exit_code": 124}
     report = {"index": SPEC.key, "status": "failed", "error": "PRIVATE_ERROR"}
     text = digest(report, receipt=receipt)
-    assert "执行超时" in text and "处理失败" in text
-    assert "无可核对的估值日期；新鲜度未知" in text
-    assert "估值状态：暂无判断" in text
-    assert "PRIVATE_ERROR" not in text
+    assert text == "指数估值：暂无\n沪深300 暂无 暂无 暂无判断"
 
 
 def test_data_after_calendar_target_is_not_used_for_a_signal():
     report = make_report("10")
     report["collection"]["last_session"]["date"] = "2024-01-01"
     text = digest(report)
-    assert "日期待核对" in text
-    assert "估值状态：暂无判断" in text
-    assert "估值状态：恐慌" not in text
+    assert text == "指数估值：2024-01-02\n沪深300 暂无 暂无 暂无判断"
+
+
+@pytest.mark.parametrize("pe", [None, "0", "-1"])
+def test_missing_or_invalid_pe_keeps_date_heading_without_a_signal(pe):
+    report = make_report()
+    report["latest"]["pe"] = pe
+    assert digest(report) == "指数估值：2024-01-02\n沪深300 暂无 暂无 暂无判断"
+
+
+@pytest.mark.parametrize("percentile", [None, "-1", "101"])
+def test_unavailable_rank_does_not_become_a_percentage(percentile):
+    report = make_report()
+    report["latest"]["percentile"] = percentile
+    assert digest(report) == "指数估值：2024-01-02\n沪深300 15.00 暂无 普通"

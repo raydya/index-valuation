@@ -32,18 +32,27 @@
   }
 
   function pe(value) {
-    if (value == null || value === '' || !Number.isFinite(Number(value))) return '未记录';
-    return `${Number(value).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}×`;
+    if (value == null || value === '' || !Number.isFinite(Number(value)) || Number(value) <= 0) return '暂无';
+    return Number(value).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  function percentile(value) {
+    if (value == null || value === '' || !Number.isFinite(Number(value)) || Number(value) < 0 || Number(value) > 100) return '暂无';
+    return `${Number(value).toLocaleString('zh-CN', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`;
   }
 
   function date(value) {
-    return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : '日期未记录';
+    return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
+  }
+
+  function reasonId(item) {
+    return `market-reason-${encodeURIComponent(item.key)}`;
   }
 
   function markSelected() {
     groups.querySelectorAll('[data-market-index]').forEach(link => {
       const selected = link.dataset.marketIndex === selectedIndex;
-      link.classList.toggle('market-item-selected', selected);
+      link.closest('.market-item').classList.toggle('market-item-selected', selected);
       if (selected) link.setAttribute('aria-current', 'true');
       else link.removeAttribute('aria-current');
     });
@@ -52,31 +61,79 @@
   function renderItem(item) {
     const signal = Object.hasOwn(signals, item.signal) ? item.signal : 'unknown';
     const state = signals[signal];
-    const row = element('li', `market-item market-item-${signal}`);
+    const row = element('tr', `market-item market-item-${signal}`);
+    row.dataset.indexKey = String(item.key);
+    row.dataset.signal = signal;
+    row.dataset.market = String(item.market);
+    const nameCell = element('th');
+    nameCell.scope = 'row';
     const link = element('a', 'market-index-link');
     link.href = `/?index=${encodeURIComponent(item.key)}`;
     link.dataset.marketIndex = String(item.key);
     link.dataset.signal = signal;
-    const heading = element('span', 'market-item-heading');
-    heading.append(element('strong', 'market-index-name', item.name));
+    link.append(element('span', 'market-index-name', item.name));
+    nameCell.append(link);
+    const peCell = element('td', 'market-index-pe', pe(item.pe));
+    const percentileCell = element('td', `market-index-percentile market-value-${signal}`, percentile(item.percentile));
+    const statusCell = element('td', 'market-judgement-cell');
     const judgement = element('span', `market-judgement market-judgement-${signal}`);
     const dot = element('span', `market-dot market-dot-${signal}`);
     dot.setAttribute('aria-hidden', 'true');
     judgement.append(dot, element('span', 'visually-hidden', `${state.light}：`),
-      element('span', 'market-action', `${state.label}${state.action ? `，${state.action}` : ''}`));
-    heading.append(judgement);
-    const values = element('span', 'market-item-values');
-    values.append(element('span', 'market-index-pe', `PE ${pe(item.pe)}`),
-      element('span', 'market-index-date', date(item.as_of)));
-    link.append(heading, values);
-    if (signal === 'unknown') link.append(element('span', 'market-reason', item.reason || '当前数据或估值线不足，等待核实。'));
+      element('span', 'market-action', state.label));
+    if (signal === 'unknown') judgement.setAttribute('aria-describedby', reasonId(item));
+    judgement.title = item.reason || state.label;
+    statusCell.append(judgement);
     const detail = [item.source_label, item.basis_note,
       `恐慌线 ${pe(item.lower_pe)}；贪婪线 ${pe(item.upper_pe)}`,
       item.history_start && item.history_end ? `样本 ${item.history_start} 至 ${item.history_end}，${item.history_count ?? '未知'} 个观测` : '样本范围未记录',
       item.reason].filter(Boolean).join('；');
     link.title = detail;
-    row.append(link);
+    row.append(nameCell, peCell, percentileCell, statusCell);
     return row;
+  }
+
+  function renderGroup(day, items) {
+    const group = element('section', 'market-group');
+    group.dataset.date = day || 'unknown';
+    const heading = element('h3', 'market-group-title', `指数估值：${day || '暂无'}`);
+    heading.id = `market-date-${day || 'unknown'}`;
+    const table = element('table', 'market-table');
+    table.setAttribute('aria-labelledby', heading.id);
+    const head = element('thead');
+    const header = element('tr');
+    ['指数', 'PE', '历史分位', '估值状态'].forEach(text => {
+      const cell = element('th', '', text);
+      cell.scope = 'col';
+      if (text === '历史分位') cell.title = '此前五年同口径有效 PE 的历史分位，达到最少样本数后展示；不随下方图表的统计窗口改变。';
+      header.append(cell);
+    });
+    head.append(header);
+    const body = element('tbody');
+    const marketCodes = [...new Set([...Object.keys(markets), ...items.map(item => item.market)])];
+    marketCodes.forEach(market => items.filter(item => item.market === market)
+      .forEach(item => body.append(renderItem(item))));
+    table.append(head, body);
+    group.append(heading, table);
+    return group;
+  }
+
+  function renderReasons(items) {
+    const unknown = items.filter(item => !Object.hasOwn(signals, item.signal) || item.signal === 'unknown');
+    if (!unknown.length) return null;
+    const notes = element('details', 'market-overview-notes');
+    notes.append(element('summary', '', `查看 ${unknown.length} 项暂无判断的原因`));
+    const list = element('ul');
+    unknown.forEach(item => {
+      const reason = element('li', 'market-reason');
+      reason.id = reasonId(item);
+      reason.dataset.reasonIndex = String(item.key);
+      reason.append(element('strong', '', `${item.name}：`),
+        element('span', 'market-reason-text', item.reason || '当前数据或估值线不足，等待核实。'));
+      list.append(reason);
+    });
+    notes.append(list);
+    return notes;
   }
 
   function render(snapshot) {
@@ -88,23 +145,24 @@
     if (snapshot.rule?.description) document.getElementById('market-overview-rule-text').textContent = snapshot.rule.description;
     if (JSON.stringify(snapshot.items) !== JSON.stringify(lastSnapshot?.items)) {
       const focusedKey = document.activeElement?.closest('[data-market-index]')?.dataset.marketIndex;
+      const previousNotes = groups.querySelector('.market-overview-notes');
+      const notesOpen = previousNotes?.open;
+      const focusedNotes = previousNotes?.querySelector('summary') === document.activeElement;
       const fragment = document.createDocumentFragment();
-      const marketCodes = [...new Set(['CN', 'HK', 'US', ...snapshot.items.map(item => item.market)])];
-      marketCodes.forEach(market => {
-        const items = snapshot.items.filter(item => item.market === market);
-        if (!items.length) return;
-        const group = element('section', 'market-group');
-        group.dataset.market = String(market);
-        const heading = element('h3', '', markets[market] || '其他');
-        const list = element('ul', 'market-items');
-        items.forEach(item => list.append(renderItem(item)));
-        group.append(heading, list);
-        fragment.append(group);
-      });
+      const days = [...new Set(snapshot.items.map(item => date(item.as_of)))];
+      days.sort((a, b) => (b || '').localeCompare(a || ''));
+      days.forEach(day => fragment.append(renderGroup(day,
+        snapshot.items.filter(item => date(item.as_of) === day))));
+      const reasons = renderReasons(snapshot.items);
+      if (reasons) {
+        reasons.open = Boolean(notesOpen);
+        fragment.append(reasons);
+      }
       if (!snapshot.items.length) fragment.append(element('p', 'market-overview-empty', '尚无可展示的指数记录。'));
       groups.replaceChildren(fragment);
       if (focusedKey) [...groups.querySelectorAll('[data-market-index]')]
         .find(link => link.dataset.marketIndex === focusedKey)?.focus({ preventScroll: true });
+      if (focusedNotes) (reasons?.querySelector('summary') || refresh).focus({ preventScroll: true });
     }
     markSelected();
   }

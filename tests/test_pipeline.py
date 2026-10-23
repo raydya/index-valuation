@@ -651,7 +651,168 @@ def test_market_overview_reads_current_latest_method_without_reusing_earlier_pe(
         assert data["items"][0]["signal"] == "unknown"
         assert data["items"][0]["status"] == "missing_pe"
         assert data["items"][0]["pe"] is None
+        assert data["items"][0]["percentile"] is None
         assert data["items"][0]["upper_pe"] == "29.0"
+
+
+@pytest.mark.parametrize("sampling", ["daily", "weekly", "short_history"])
+def test_latest_overview_rank_matches_default_dashboard(repository, sampling):
+    from fastapi.testclient import TestClient
+
+    from index_valuation.index_series import method_for, valuation_profile
+    from index_valuation.panic_lines import enrich_panic_lines
+    from index_valuation.webapp import create_app
+
+    spec = replace(
+        SPEC,
+        band_min_observations=2,
+        valuation_source="danjuan" if sampling == "weekly" else "futu",
+        inception_date=date(2024, 1, 1) if sampling == "short_history" else date(2005, 4, 8),
+    )
+    samples = {
+        "daily": [
+            (date(2019, 1, 1), "1", True),  # Just outside the five-year window.
+            (date(2019, 1, 2), "10", "missing"),  # Boundary is included; absent flag defaults true.
+            (date(2023, 12, 28), "100", None),  # Explicit null must not default true.
+            (date(2023, 12, 29), "20", True),
+            (date(2024, 1, 1), "999", False),
+            (date(2024, 1, 2), "15", True),  # Today's PE is excluded from history.
+        ],
+        "weekly": [
+            (date(2019, 1, 3), "1", True),
+            (date(2019, 1, 4), "10", True),
+            (date(2023, 12, 25), "40", True),
+            (date(2023, 12, 29), "20", True),  # Last usable PE in the completed week.
+            (date(2024, 1, 2), "100", True),  # Current week is excluded in its entirety.
+            (date(2024, 1, 3), "999", False),
+            (date(2024, 1, 4), "15", True),
+        ],
+        "short_history": [
+            (date(2024, 1, 2), "10", True),
+            (date(2024, 1, 3), "20", True),
+            (date(2024, 1, 4), "15", True),
+        ],
+    }[sampling]
+    profile = valuation_profile(spec)
+    points = enrich_panic_lines(
+        spec,
+        [
+            {
+                "trade_date": day,
+                "price": None if value == "10" else Decimal(1000),
+                "pe": Decimal(value),
+                "implied_eps": None if value == "10" else Decimal(1000) / Decimal(value),
+                "price_source": "futu",
+                "pe_source": profile["source"],
+                "pe_basis": profile["basis"],
+                "pe_comparison_status": "unconfirmed",
+                **({"pe_usable": usable} if usable != "missing" else {}),
+                "phase": "published",
+            }
+            for day, value, usable in samples
+        ],
+    )
+    repository.ensure_index(spec)
+    run = repository.start_run(spec, DAY)
+    repository.save_index_series(spec, method_for(spec), run, points)
+    repository.save_index_series(
+        spec, "old_method", run, [{**points[-1], "trade_date": date(2024, 1, 5)}]
+    )
+    latest = repository.latest_index_points([spec], include_statistics=True)[spec.key]
+    assert latest["history_count"] == 2
+    assert latest["percentile"] == Decimal(50)
+    assert "percentile" not in repository.latest_index_points([spec])[spec.key]
+    with TestClient(create_app(repository=repository, specs={spec.key: spec})) as client:
+        dashboard = client.get(f"/api/indices/{spec.key}/dashboard").json()
+        overview = client.get("/api/market-overview").json()["items"][0]
+    assert dashboard["history_years"] == 5
+    assert dashboard["selected"]["history_count"] == latest["history_count"]
+    assert Decimal(dashboard["selected"]["percentile"]) == latest["percentile"]
+    assert Decimal(overview["percentile"]) == latest["percentile"]
+    assert overview["as_of"] == points[-1]["trade_date"].isoformat()
+    if sampling == "short_history":
+        assert overview["signal"] == "unknown"
+        assert overview["status"] == "insufficient_history"
+
+
+def test_latest_overview_does_not_calculate_statistics_for_paused_index(repository, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from index_valuation.index_series import method_for
+    from index_valuation.webapp import create_app
+
+    spec = replace(SPEC, collection_enabled=False, collection_disabled_reason="Source paused")
+    repository.ensure_index(spec)
+    run = repository.start_run(spec, DAY)
+    repository.save_index_series(
+        spec,
+        method_for(spec),
+        run,
+        [
+            {
+                "trade_date": DAY,
+                "price": Decimal(1000),
+                "pe": Decimal(20),
+                "implied_eps": Decimal(50),
+            }
+        ],
+    )
+
+    def unexpected_statistics(*args, **kwargs):
+        raise AssertionError("A paused index must not calculate a current percentile")
+
+    monkeypatch.setattr("index_valuation.index_series.latest_pe_statistics", unexpected_statistics)
+    with TestClient(create_app(repository=repository, specs={spec.key: spec})) as client:
+        item = client.get("/api/market-overview").json()["items"][0]
+    assert item["percentile"] is None
+    assert item["status"] == "collection_paused"
+
+
+def test_latest_overview_omits_rank_when_pe_changes_between_reads(repository):
+    from sqlalchemy import event
+
+    from index_valuation.index_series import method_for
+    from index_valuation.models import IndexSeriesRecord
+
+    spec = replace(SPEC, band_min_observations=2)
+    repository.ensure_index(spec)
+    run = repository.start_run(spec, DAY)
+    repository.save_index_series(
+        spec,
+        method_for(spec),
+        run,
+        [
+            {
+                "trade_date": DAY - timedelta(days=offset),
+                "price": Decimal(1000),
+                "pe": Decimal(value),
+                "implied_eps": Decimal(50),
+            }
+            for offset, value in ((2, "10"), (1, "20"), (0, "15"))
+        ],
+    )
+    revised = False
+
+    def revise_before_history_read(connection, cursor, statement, parameters, context, many):
+        nonlocal revised
+        if not revised and statement.startswith("SELECT index_series.trade_date"):
+            revised = True
+            with repository.engine.begin() as writer:
+                writer.execute(
+                    update(IndexSeriesRecord)
+                    .where(IndexSeriesRecord.trade_date == DAY)
+                    .values(pe=Decimal(30))
+                )
+
+    event.listen(repository.engine, "before_cursor_execute", revise_before_history_read)
+    try:
+        latest = repository.latest_index_points([spec], include_statistics=True)[spec.key]
+    finally:
+        event.remove(repository.engine, "before_cursor_execute", revise_before_history_read)
+    assert revised
+    assert latest["pe"] == Decimal(15)
+    assert latest["percentile"] is None
+    assert latest["history_count"] == 0
 
 
 def test_official_priority_rebuild_preserves_legacy_method_and_exports(repository, tmp_path):

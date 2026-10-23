@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, func, or_, select, text, update
+from sqlalchemy import and_, case, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import Engine
 
@@ -645,9 +645,9 @@ class Repository:
             )
         return [_restore_index_point(row) for row in rows]
 
-    def latest_index_points(self, specs):
-        """Read the latest row of each current method, including explicit missing PE."""
-        from index_valuation.index_series import method_for
+    def latest_index_points(self, specs, *, include_statistics=False):
+        """Read current-method rows, optionally adding the dashboard's five-year rank."""
+        from index_valuation.index_series import latest_pe_statistics, method_for, years_before
 
         if isinstance(specs, Mapping):
             specs = specs.values()
@@ -667,7 +667,51 @@ class Repository:
                     .mappings()
                     .first()
                 )
-                result[spec.key] = _restore_index_point(row) if row else None
+                point = _restore_index_point(row) if row else None
+                if point is not None and include_statistics and spec.collection_enabled:
+                    # Only the current window's scalar inputs are needed. Avoid loading
+                    # full archived details (including daily signal metadata) per index.
+                    history = (
+                        connection.execute(
+                            select(
+                                IndexSeriesRecord.trade_date,
+                                IndexSeriesRecord.pe,
+                                case(
+                                    (
+                                        IndexSeriesRecord.details.has_key("pe_usable"),
+                                        IndexSeriesRecord.details["pe_usable"].as_boolean(),
+                                    ),
+                                    else_=True,
+                                ).label("pe_usable"),
+                            )
+                            .where(
+                                IndexSeriesRecord.index_key == spec.key,
+                                IndexSeriesRecord.method == method_for(spec),
+                                IndexSeriesRecord.trade_date
+                                >= years_before(point["trade_date"], 5),
+                                IndexSeriesRecord.trade_date <= point["trade_date"],
+                            )
+                            .order_by(IndexSeriesRecord.trade_date)
+                        )
+                        .mappings()
+                        .all()
+                    )
+                    selected = latest_pe_statistics(spec, history, history_years=5)
+                    # The rank's sample differs from the rolling valuation signal:
+                    # it permits a shorter span and follows the dashboard's sampling.
+                    # A concurrent rebuild can change the latest PE between these reads.
+                    # Never attach its new rank to the earlier observation.
+                    if (
+                        selected.get("trade_date") == point["trade_date"]
+                        and selected.get("pe") == point["pe"]
+                        and selected.get("pe_usable", True) == point.get("pe_usable", True)
+                    ):
+                        point.update(
+                            {key: selected[key] for key in ("percentile", "history_count")}
+                        )
+                    else:
+                        point.update(percentile=None, history_count=0)
+                result[spec.key] = point
         return result
 
     def panic_lines(self, specs, as_of: date | None = None):

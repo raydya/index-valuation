@@ -52,7 +52,7 @@ class StoredSeries:
         eligible = [row for row in self.rows if not as_of or row["trade_date"] <= as_of]
         return {SPEC.key: eligible[-1]["greed_line"]} if eligible else {}
 
-    def latest_index_points(self, specs):
+    def latest_index_points(self, specs, *, include_statistics=False):
         return {SPEC.key: self.rows[-1]}
 
 

@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from index_valuation.domain import IndexSpec
+from index_valuation.index_series import build_dashboard, method_for
 from index_valuation.market_overview import build_market_overview
 from index_valuation.panic_lines import enrich_panic_lines
 from index_valuation.webapp import create_app
@@ -19,11 +20,13 @@ def rows(pe="15", **extra):
         {
             "trade_date": day,
             "price": Decimal("1000"),
+            "price_source": "futu",
             "pe": Decimal(value) if value is not None else None,
             "implied_eps": Decimal("50"),
             "pe_source": "futu",
             "pe_basis": "futu_valuation_pe",
             "pe_usable": True,
+            "pe_comparison_status": "unconfirmed",
             "phase": "published",
         }
         for day, value in (
@@ -152,11 +155,76 @@ def test_changed_minimum_history_or_input_quality_invalidates_old_persisted_sign
         assert item["signal"] == "unknown" and item["status"] == "not_calculated"
 
 
+@pytest.mark.parametrize(("pe", "percentile"), [("10", "25"), ("15", "50"), ("20", "75")])
+def test_percentile_uses_dashboard_rank_instead_of_panic_or_greed_threshold(pe, percentile):
+    points = enrich_panic_lines(SPEC, rows(pe))
+    selected = build_dashboard(SPEC, points)["selected"]
+    selected["method"] = method_for(SPEC)
+    original = deepcopy(selected)
+    item = build_market_overview({SPEC.key: SPEC}, {SPEC.key: selected})["items"][0]
+    assert item["percentile"] == Decimal(percentile)
+    assert item["percentile"] == selected["percentile"]
+    assert selected == original
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"method": "old-method"},
+        {"pe_source": "other"},
+        {"pe_basis": "other"},
+        {"pe_usable": False},
+        {"pe": None},
+        {"pe": Decimal(0)},
+        {"pe": Decimal("NaN")},
+        {"percentile": None},
+        {"percentile": Decimal("NaN")},
+        {"percentile": Decimal("-0.1")},
+        {"percentile": Decimal("100.1")},
+        {"history_count": 1},
+        {"history_count": None},
+        {"history_count": True},
+    ],
+)
+def test_percentile_requires_current_method_usable_same_basis_pe_and_enough_samples(extra):
+    selected = build_dashboard(SPEC, enrich_panic_lines(SPEC, rows()))["selected"]
+    selected.update(extra)
+    item = build_market_overview({SPEC.key: SPEC}, {SPEC.key: selected})["items"][0]
+    assert item["percentile"] is None
+
+
+def test_rank_is_independent_of_full_five_year_signal_and_price_availability():
+    points = enrich_panic_lines(
+        SPEC, rows(trade_date=date(2023, 12, 31), price=None, implied_eps=None)
+    )
+    selected = build_dashboard(SPEC, points)["selected"]
+    assert selected["history_span_short"] is True
+    item = build_market_overview({SPEC.key: SPEC}, {SPEC.key: selected})["items"][0]
+    assert item["percentile"] == Decimal(50)
+    assert item["signal"] == "unknown"
+    assert item["status"] == "insufficient_history"
+
+
+def test_paused_missing_and_old_stored_points_do_not_invent_a_percentile():
+    selected = build_dashboard(SPEC, enrich_panic_lines(SPEC, rows()))["selected"]
+    paused = replace(SPEC, collection_enabled=False)
+    item = build_market_overview({SPEC.key: paused}, {SPEC.key: selected})["items"][0]
+    assert item["percentile"] is None
+    item = build_market_overview({SPEC.key: SPEC}, {})["items"][0]
+    assert item["percentile"] is None
+    # Stored signal metadata alone lacks the dashboard rank and its sample count.
+    point = enrich_panic_lines(SPEC, rows())[-1]
+    assert point["valuation_signal"]["history_count"] == SPEC.band_min_observations
+    item = build_market_overview({SPEC.key: SPEC}, {SPEC.key: point})["items"][0]
+    assert item["percentile"] is None
+
+
 def test_current_endpoint_ignores_historical_selection_and_reads_new_values_without_restart():
     class MemoryRepository:
         point = enrich_panic_lines(SPEC, rows("20"))[-1]
 
-        def latest_index_points(self, specs):
+        def latest_index_points(self, specs, *, include_statistics=False):
+            assert include_statistics
             return {SPEC.key: self.point}
 
     repository = MemoryRepository()

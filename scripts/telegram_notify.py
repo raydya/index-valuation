@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 
 from dotenv import set_key
 
-from index_valuation.notification_digest import build_digest
+from index_valuation.notification_digest import build_notification
 from index_valuation.registry import load_indices
 from index_valuation.run_journal import read_reports
 from index_valuation.telegram_notifications import (
@@ -39,6 +39,7 @@ def main(argv=None):
     retry.add_argument("--batch-id", type=UUID, required=True)
     args = parser.parse_args(argv)
     client = None
+    rich_message = None
     try:
         settings = TelegramSettings(_env_file=ROOT / ".env")
         if args.command == "status":
@@ -76,13 +77,14 @@ def main(argv=None):
                 "指数估值通知 · 接入测试\n\n"
                 "Telegram 私聊推送已接通。\n"
                 "北京时间每天 09:00 启动美股更新、17:00 启动A股和港股更新，任务结束后推送。\n"
-                "通知包含任务结果、实际数据日期、PE、历史分位及估值区间；异常和缺口会单独标注。\n"
+                "估值通知以数据日期为标题，表格包含指数、PE、历史分位和估值状态。\n"
                 "本条为通道测试，不代表已执行新的数据更新。"
             )
             path = ROOT / "data/scheduler/notifications" / f"test-{uuid4()}.json"
         elif args.command == "retry":
             path = ROOT / "data/scheduler/notifications" / f"{args.batch_id}.json"
-            text = json.loads(path.read_text(encoding="utf-8"))["text"]
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            text, rich_message = saved["text"], saved.get("rich_message")
         else:
             receipt = json.loads(
                 (ROOT / "data/scheduler/index-runs" / f"{args.market}.latest.json").read_text(
@@ -94,12 +96,16 @@ def main(argv=None):
             batch = str(UUID(receipt["batch_id"]))
             journal = ROOT / "data/scheduler/index-runs" / f"{batch}.results.jsonl"
             reports = read_reports(journal, batch) if journal.exists() else []
-            text = build_digest(load_indices(ROOT / "indices.toml"), receipt, reports)
+            message = build_notification(load_indices(ROOT / "indices.toml"), receipt, reports)
+            text, rich_message = message["text"], message["rich_message"]
             path = ROOT / "data/scheduler/notifications" / f"{batch}.json"
             if args.command == "preview":
                 print(text)
                 return 0
-        result = deliver(settings, text, path)
+            if not text:
+                print(json.dumps({"status": "skipped", "error": "no_matching_indices"}))
+                return 2
+        result = deliver(settings, text, path, rich_message=rich_message)
         print(
             json.dumps(
                 {key: result[key] for key in ("status", "message_ids", "error") if key in result}

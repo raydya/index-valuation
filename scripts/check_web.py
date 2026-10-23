@@ -6,6 +6,7 @@ import json
 import math
 import os
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 from playwright.async_api import async_playwright, expect
@@ -441,19 +442,37 @@ async def main():
                 response.raise_for_status()
                 extra.append(response.json())
     failures = []
+    dashboard_requests = []
     async with async_playwright() as playwright:
         browser = await playwright.webkit.launch()
         context = await browser.new_context(
             viewport={"width": 1440, "height": 1050}, device_scale_factor=1
         )
         page = await context.new_page()
+
+        def record_request(request):
+            path = urlsplit(request.url).path
+            if path.startswith("/api/indices/") and path.endswith("/dashboard"):
+                dashboard_requests.append(request.url)
+
+        page.on("request", record_request)
         page.on("pageerror", lambda error: failures.append(str(error)))
         page.on(
             "console",
             lambda message: failures.append(message.text) if message.type == "error" else None,
         )
         try:
-            await page.goto(URL, wait_until="networkidle")
+            async with page.expect_response(
+                lambda response: urlsplit(response.url).path == "/api/indices/csi300/dashboard"
+            ) as event:
+                await page.goto(URL, wait_until="networkidle")
+            browser_response = await event.value
+            assert parse_qs(urlsplit(browser_response.url).query).get("view") == ["chart"]
+            browser_data = await browser_response.json()
+            assert browser_response.status == 200
+            assert browser_data["selected"] == data["selected"]
+            assert len(browser_data["series"]) == len(data["series"])
+            assert all("panic_line" not in point for point in browser_data["series"])
             await expect(page.locator("#pe")).to_have_text(f"{float(data['selected']['pe']):,.3f}")
             await check_price_return(page, data)
             await check_panic_reference(page, data)
@@ -579,6 +598,9 @@ async def main():
             await page.locator("#index-select").select_option(data["index"]["key"])
             await expect(page.locator("#price")).to_have_text(display(data["selected"]["price"]))
             await expect(page.locator("#code")).to_have_text(data["index"]["code"])
+            assert dashboard_requests and all(
+                parse_qs(urlsplit(url).query).get("view") == ["chart"] for url in dashboard_requests
+            ), "Browser dashboard loads must use the chart view, including switches and history"
             assert not failures, failures
             report = {
                 "browser": "WebKit",
@@ -588,6 +610,7 @@ async def main():
                 "csv_rows": len(rows),
                 "additional_indices": additional_indices,
                 "checks": [
+                    "browser_uses_chart_view_without_daily_line_metadata_and_keeps_full_selected",
                     "live_values",
                     "fixed_bands",
                     "rolling_mean_pe_and_points",
