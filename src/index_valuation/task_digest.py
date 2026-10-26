@@ -22,40 +22,23 @@ ZONE = ZoneInfo("Asia/Shanghai")
 SCHEMA = "daily_task_summary_v1"
 ORDER = ("index_us", "index_asia", "portfolio_us", "portfolio_asia", "erp", "policy_daily")
 LABELS = {
-    "finished": "流程已返回",
+    "finished": "流程完成",
     "completed": "完成",
     "partial": "部分完成",
-    "failed": "执行失败",
-    "timed_out": "执行超时",
-    "interrupted": "执行中断",
-    "running": "仍在执行",
-    "queued": "已提交队列，尚无匹配的完成回执",
-    "unknown": "状态待确认",
+    "failed": "失败",
+    "timed_out": "超时",
+    "interrupted": "中断",
+    "running": "执行中",
+    "queued": "排队中",
+    "unknown": "待确认",
     "never_run": "无执行回执",
 }
 
 
 def _status_label(key, status):
-    if key == "erp" and status == "completed":
-        return "完成（回执已确认回读）"
     if key.startswith("portfolio_") and status == "finished":
-        return "进程已结束，数据结果见下"
-    return LABELS.get(status, "状态待确认")
-
-
-def _notification_line(status, prefix):
-    value = {
-        "sent": "已发送",
-        "failed": "发送失败",
-        "delivery_unknown": "发送结果不确定",
-        "sending": "发送结果待确认",
-        "disabled": "推送未启用",
-        "not_configured": "未配置",
-        "pending": "等待发送",
-        "not_sent": "尚未发送",
-        "skipped": "本次未发送",
-    }.get(status)
-    return f"{prefix} Telegram {value}" if value else None
+        return "已结束，结果待确认"
+    return LABELS.get(status, "待确认")
 
 
 def _mapping(value):
@@ -116,24 +99,11 @@ def _execution(run, today):
     start, finish, queued = (times[key] for key in ("started_at", "finished_at", "queued_at"))
     if start:
         interval = _clock(start, today)
-        interval += "–" + _clock(finish, today) if finish else " 起，尚无结束回执"
+        interval += "–" + _clock(finish, today) if finish else " 起"
         return interval
     if queued:
         return _clock(queued, today) + " 提交"
-    return "时间未知"
-
-
-def _portfolio_result(value):
-    """Quote the runner's prose without interpreting a zero process exit as success."""
-    if not isinstance(value, str):
-        return ""
-    lines = [
-        line.strip().lstrip("# ")
-        for line in value.splitlines()
-        if line.strip() and not line.lstrip().startswith(("|", ":codex-file-citation"))
-    ]
-    text = _plain(" ".join(lines), 1200)
-    return text if len(text) <= 600 else text[:600] + "…（摘要截断，完整结果见任务页面）"
+    return f"{_clock(finish, today)} 结束" if finish else "—"
 
 
 def _read_object(path, base, maximum=128 * 1024):
@@ -253,85 +223,79 @@ def read_index_batches(root, specs, snapshot):
     return batches
 
 
-def build_task_digest(snapshot, batches=None):
-    """Render task conclusions; old receipts never become today's success."""
+def _invalid_times(run, checked):
+    times = _times(run)
+    if any(run.get(key) is not None and value is None for key, value in times.items()):
+        return True
+    if any(value > checked for value in times.values() if value is not None):
+        return True
+    queued, start, finish = (times[key] for key in ("queued_at", "started_at", "finished_at"))
+    if (start and finish and finish < start) or (queued and start and start < queued):
+        return True
+    return run.get("status") in {"completed", "finished"} and (start is None or finish is None)
+
+
+def build_task_notification(snapshot, batches=None):
+    """Render three fields per task; detailed evidence stays in the frozen summary."""
     checked = _time(snapshot.get("checked_at"))
     if checked is None:
         raise ValueError("缺少汇总检查时间")
     today = checked.date()
-    batches = batches or {}
     rows = {row.get("id"): row for row in snapshot.get("tasks", []) if isinstance(row, dict)}
     task_names = {task.id: task.name for task in TASKS}
-    lines = [
-        f"每日任务汇总｜{today}",
-        f"截至 {checked:%H:%M}（北京时间；计划每天 18:00 汇总）",
-    ]
+    values = []
     for key in ORDER:
         row = _mapping(rows.get(key))
         run = _mapping(row.get("last_run"))
-        schedule = _plain(row.get("schedule_text"), 200)
-        match = re.search(r"每天 (\d{2}:\d{2})", schedule)
-        planned = match[1] if match else "未知"
         name = _plain(row.get("name"), 100) or task_names[key]
         status = run.get("status")
-        lines.extend(("", f"{name}｜计划 {planned}"))
-        if not _belongs_today(run, today, checked):
-            times = [value for value in _times(run).values() if value]
-            if any(value > checked for value in times):
-                lines.append("回执时间异常，今日执行结果待确认")
-            elif status == "running" and not times:
-                lines.append("调度显示正在运行，尚无本次时间回执")
+        if _invalid_times(run, checked):
+            execution, result = "—", "时间异常，待确认"
+        elif not _belongs_today(run, today, checked):
+            execution = "—"
+            if status == "running" and not any(_times(run).values()):
+                result = "执行中（时间待确认）"
+            elif status == "unknown" and not any(_times(run).values()):
+                result = "待确认"
             else:
-                lines.append("今日未见执行回执")
-                if times:
-                    lines.append(
-                        "最近记录 " + _execution(run, today) + "｜" + _status_label(key, status)
-                    )
-            warnings = row.get("warnings") or []
-            if warnings:
-                lines.append("提示：" + "；".join(_plain(item, 250) for item in warnings[:3]))
-            continue
-        label = _status_label(key, status)
-        lines.append(f"实际 {_execution(run, today)}｜{label}")
-        if key.startswith("portfolio_"):
-            result = _portfolio_result(run.get("result_text"))
-            lines.append("执行结果摘录：" + result if result else "尚无可核对的结果文本")
-        elif key.startswith("index_"):
-            batch = _mapping(batches.get(key))
-            notified = _notification_line(batch.get("notification_status"), "原批次")
-            if notified:
-                lines.append(notified)
-            lines.extend(batch.get("lines") or ["本次批次明细不可用，数据完整性待确认"])
+                result = "今日无执行回执"
         else:
-            if key == "policy_daily":
-                notified = _notification_line(run.get("notification_status"), "政策日报")
-                if notified:
-                    lines.append(notified)
-            if run.get("summary"):
-                lines.append(_plain(run["summary"], 600))
-            for item in row.get("data_items") or []:
-                item = _mapping(item)
-                lines.append(
-                    f"{_plain(item.get('name'), 100)}：输入日期 {_day(item.get('date')) or '未知'}"
-                )
-            if run.get("result_text"):
-                lines.append("执行结果摘录：" + _portfolio_result(run["result_text"]))
-        notices = [*(run.get("issues") or []), *(row.get("warnings") or [])]
-        if key.startswith("index_") and _mapping(batches.get(key)).get("batch_id"):
-            # The journal already accounts for these results; DB-derived duplicates add noise.
-            notices = row.get("warnings") or []
-        if notices:
-            lines.append("提示：" + "；".join(dict.fromkeys(_plain(item, 300) for item in notices)))
-    for warning in snapshot.get("warnings") or []:
-        lines.extend(("", _plain(warning, 600)))
-    lines.extend(
-        (
-            "",
-            "未完成任务按本次检查时刻如实记录，不等待其结束；"
-            "指数完整性以本次批次为准，详细估值和政策研判沿用各任务原推送。",
-        )
-    )
-    return "\n".join(lines)
+            execution, result = _execution(run, today), _status_label(key, status)
+        values.append([name, execution, result])
+    title = f"每日任务汇总：{today}"
+    headers = ["任务名称", "执行时间", "执行结果"]
+    cells = [
+        [
+            {
+                "text": value,
+                "align": "center" if number == 0 or column == 1 else "left",
+                "valign": "middle",
+                **({"is_header": True} if number == 0 else {}),
+            }
+            for column, value in enumerate(row)
+        ]
+        for number, row in enumerate([headers, *values])
+    ]
+    return {
+        "text": "\n".join([title, "｜".join(headers), *("｜".join(row) for row in values)]),
+        "rich_message": {
+            "blocks": [
+                {"type": "heading", "size": 3, "text": title},
+                {
+                    "type": "table",
+                    "cells": cells,
+                    "is_bordered": True,
+                    "is_striped": True,
+                    "is_compact": True,
+                },
+            ]
+        },
+    }
+
+
+def build_task_digest(snapshot, batches=None):
+    """Plain-text preview of the same three-column daily task summary."""
+    return build_task_notification(snapshot, batches)["text"]
 
 
 def collect_summary(root, specs, *, now=None, service=None):
@@ -370,7 +334,7 @@ def collect_summary(root, specs, *, now=None, service=None):
             "checked_at": snapshot["checked_at"],
             "snapshot": snapshot,
             "index_batches": batches,
-            "text": build_task_digest(snapshot, batches),
+            **build_task_notification(snapshot, batches),
         }
     finally:
         if engine is not None:
@@ -405,6 +369,7 @@ def send_task_summary(
                 or not summary["text"]
                 or _time(summary.get("checked_at")) is None
                 or _time(summary["checked_at"]).date() != day
+                or ("rich_message" in summary and not isinstance(summary["rich_message"], dict))
             ):
                 raise ValueError("已保存摘要无效")
         elif retry_date is not None:
@@ -415,7 +380,8 @@ def send_task_summary(
         else:
             summary = collector(root, specs, now=checked)
             save_json(frozen, summary)
-    state = delivery(settings, summary["text"], notification)
+    options = {"rich_message": summary["rich_message"]} if "rich_message" in summary else {}
+    state = delivery(settings, summary["text"], notification, **options)
     return {
         "date": day.isoformat(),
         "checked_at": summary["checked_at"],

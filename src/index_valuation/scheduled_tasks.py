@@ -790,11 +790,22 @@ class ScheduledTasks:
             started = _datetime(execution["started_at"])
             finished = _datetime(execution.get("finished_at"))
             status = execution["status"]
+            manual_recovery = execution.get("mode") == "manual_recovery"
             now = self.now().astimezone(ZONE)
+            if manual_recovery:
+                original_run_id = UUID(execution["recovery_of_run_id"])
+                if (
+                    original_run_id == UUID(execution["run_id"])
+                    or execution.get("execution_origin") != "authorized_manual_recovery"
+                    or execution.get("exit_code") is not None
+                    or execution.get("process_exit_code") is not None
+                    or status not in {"completed", "partial"}
+                ):
+                    raise ValueError("人工恢复来源或终态无效")
             if (
                 execution.get("schema") != "erp_execution_v1"
                 or execution.get("task") != "erp"
-                or execution.get("mode") != "codex_exec"
+                or execution.get("mode") not in {"codex_exec", "manual_recovery"}
                 or status
                 not in {"running", "completed", "partial", "failed", "timed_out", "interrupted"}
                 or started is None
@@ -819,6 +830,11 @@ class ScheduledTasks:
                     receipt.get(key) != execution.get(key) for key in ("date", "run_id")
                 ):
                     raise ValueError("业务回执身份不匹配")
+                if manual_recovery and any(
+                    receipt.get(key) != execution.get(key)
+                    for key in ("mode", "execution_origin", "recovery_of_run_id", "status")
+                ):
+                    raise ValueError("人工恢复业务回执来源不匹配")
                 clean = validate_result(
                     receipt, not_before=started, now=now, require_all_items=True
                 )
@@ -847,7 +863,9 @@ class ScheduledTasks:
             if not run["summary"]:
                 run["summary"] = fallback
             return run, items
-        if clean is None or (status == "completed" and run["exit_code"] != 0):
+        if clean is None or (
+            status == "completed" and not manual_recovery and run["exit_code"] != 0
+        ):
             run["status"] = "unknown"
             run["summary"] = "执行已结束，但缺少匹配且有效的表格回读结果"
             return run, []

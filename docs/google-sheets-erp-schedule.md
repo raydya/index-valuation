@@ -33,6 +33,14 @@ launchctl kickstart "gui/$(id -u)/cn.index-valuation.erp-sheet"
 上次进程异常退出留下的运行记录，在确认锁已释放后记为中断，仍不自动重复写表。
 若需人工恢复，先核对该次事件、业务回执和真实表格，不能删除状态文件后盲目重跑。
 
+已授权的人工恢复使用独立 `run_id`、真实恢复开始/结束时间、`mode = manual_recovery`，
+并记录 `execution_origin = authorized_manual_recovery` 与原执行的 `recovery_of_run_id`；
+不伪装成原定时进程完成，`exit_code` 和 `process_exit_code` 保持空值。
+先归档原 `last-execution.json` 和当日业务回执，保留 `runs/YYYY-MM-DD/` 内原失败状态与事件。
+实际表格回读通过后，使用现有业务结果校验规则发布新的匹配回执和最新执行记录。
+人工恢复只发布已核验的 `completed` / `partial` 终态；来源标识、执行身份或回读证据不匹配时，
+网页和汇总显示未知，不采用原完成记录替代。仍有日期、口径或来源缺口时保持 `partial`。
+
 ## 执行、回执和异常
 
 执行命令使用与持仓任务相同的 `codex --no-daemon exec --approve-for-me`，保留自动审批审查，

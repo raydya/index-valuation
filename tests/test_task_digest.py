@@ -14,6 +14,7 @@ from index_valuation.task_digest import (
     SCHEMA,
     ZONE,
     build_task_digest,
+    build_task_notification,
     collect_summary,
     read_index_batches,
     send_task_summary,
@@ -88,9 +89,9 @@ def test_old_receipts_are_not_presented_as_todays_completed_tasks():
         ),
         {"index_us": {"lines": ["must not appear as today's data"]}},
     )
-    assert "今日未见执行回执" in text
-    assert "最近记录 10-19 09:03–10-19 09:13" in text
-    assert "10-19 08:13 提交｜已提交队列，尚无匹配的完成回执" in text
+    assert "index_us｜—｜今日无执行回执" in text
+    assert "erp｜—｜今日无执行回执" in text
+    assert "10-19" not in text
     assert "must not appear" not in text
 
 
@@ -104,12 +105,12 @@ def test_same_day_queued_erp_is_not_sheet_completion():
     )
     row["warnings"] = ["提交后已等待 10 小时，仍未取得匹配的完成回执"]
     text = build_task_digest(snapshot(row))
-    assert "实际 08:13 提交｜已提交队列，尚无匹配的完成回执" in text
-    assert "等待 10 小时" in text
-    assert "完成（回执已确认回读）" not in text
+    assert "erp｜08:13 提交｜排队中" in text
+    assert "等待 10 小时" not in text
+    assert "回读" not in text
 
 
-def test_policy_digest_reports_conclusions_and_delivery_without_claiming_sheet_readback():
+def test_completed_tasks_only_show_name_time_and_result():
     row = task(
         "policy_daily",
         status="completed",
@@ -121,14 +122,14 @@ def test_policy_digest_reports_conclusions_and_delivery_without_claiming_sheet_r
     )
     row["schedule_text"] = "每天 16:00（北京时间，含周末）"
     text = build_task_digest(snapshot(row))
-    assert "policy_daily｜计划 16:00" in text
-    assert "实际 16:00–16:12｜完成" in text
-    assert "今日没有发现与924相当" in text
-    assert "偏正面" in text
-    assert "政策日报 Telegram 已发送" in text
+    assert "policy_daily｜16:00–16:12｜完成" in text
+    assert "计划" not in text
+    assert "今日没有发现与924相当" not in text
+    assert "偏正面" not in text
+    assert "Telegram" not in text
     assert "回读" not in text
     erp_text = build_task_digest(snapshot(task("erp", status="completed")))
-    assert "完成（回执已确认回读）" in erp_text
+    assert "erp｜09:03–09:13｜完成" in erp_text
 
 
 def test_old_policy_digest_does_not_repeat_prior_conclusion_or_delivery():
@@ -144,7 +145,7 @@ def test_old_policy_digest_does_not_repeat_prior_conclusion_or_delivery():
             )
         )
     )
-    assert "今日未见执行回执" in text
+    assert "今日无执行回执" in text
     assert "旧日" not in text
     assert "政策日报 Telegram 已发送" not in text
     assert "回读" not in text
@@ -161,12 +162,12 @@ def test_policy_finished_after_midnight_keeps_original_research_date():
         result_text="昨日政策结论",
     )
     text = build_task_digest(snapshot(row))
-    assert "今日未见执行回执" in text
+    assert "policy_daily｜—｜今日无执行回执" in text
     assert "昨日政策结论" not in text
-    assert "最近记录 10-19 23:59–00:12｜完成" in text
+    assert "10-19 23:59" not in text
 
 
-def test_portfolio_process_success_quotes_actual_failure_and_gap_conclusions():
+def test_portfolio_process_success_is_not_upgraded_to_verified_business_success():
     row = task(
         "portfolio_us",
         result_text=(
@@ -177,8 +178,8 @@ def test_portfolio_process_success_quotes_actual_failure_and_gap_conclusions():
         ),
     )
     text = build_task_digest(snapshot(row))
-    assert "进程已结束，数据结果见下" in text
-    assert "QQQ读取失败，保留旧价格。回读存在公式错误。" in text
+    assert "portfolio_us｜09:03–09:13｜已结束，结果待确认" in text
+    assert "QQQ" not in text and "公式错误" not in text
     assert "AAA" not in text and "codex-file-citation" not in text
     assert "private" not in text
 
@@ -191,14 +192,14 @@ def test_cross_day_finish_shows_original_start_and_utc_dates_use_shanghai():
         result_text="结果尚有缺口",
     )
     text = build_task_digest(snapshot(row))
-    assert "实际 10-19 23:59–00:05" in text
+    assert "portfolio_us｜10-19 23:59–00:05｜已结束，结果待确认" in text
     assert "今日未见执行回执\n最近记录" not in text
 
 
 def test_running_without_new_receipt_never_reuses_previous_batch_data():
     row = task("index_us", status="running", started_at=None, finished_at=None)
     text = build_task_digest(snapshot(row), {"index_us": {"lines": ["old result must not appear"]}})
-    assert "调度显示正在运行，尚无本次时间回执" in text
+    assert "index_us｜—｜执行中（时间待确认）" in text
     assert "old result" not in text
 
 
@@ -235,10 +236,12 @@ def test_read_batch_uses_matching_journal_and_reports_real_band_gap(tmp_path):
     data = snapshot(row)
     batches = read_index_batches(tmp_path, {SPEC.key: SPEC}, data)
     text = build_task_digest(data, batches)
-    assert "原批次 Telegram 已发送" in text
-    assert "数据截至 2026-10-19，band 至 2026-10-16；部分完成" in text
-    assert "Nasdaq 官方价格缺 1 个交易日" in text
-    assert "100" not in text
+    assert "index_us｜09:03–09:13｜部分完成" in text
+    assert "Telegram" not in text and "band" not in text and "Nasdaq" not in text
+    evidence = "\n".join(batches["index_us"]["lines"])
+    assert "数据截至 2026-10-19，band 至 2026-10-16；部分完成" in evidence
+    assert "Nasdaq 官方价格缺 1 个交易日" in evidence
+    assert "100" not in evidence
     assert batches["index_us"]["batch_id"] == batch
 
 
@@ -292,10 +295,61 @@ def test_snapshot_still_works_when_database_is_unavailable(tmp_path):
         },
     )
     result = collect_summary(tmp_path, {}, now=NOW, service=service)
-    assert "数据库暂不可读" in result["text"]
-    assert "实际 08:13 提交｜已提交队列" in result["text"]
+    assert "数据库暂不可读" not in result["text"]
+    assert any("数据库暂不可读" in warning for warning in result["snapshot"]["warnings"])
+    assert "08:13 提交｜排队中" in result["text"]
     assert len(result["snapshot"]["tasks"]) == 6
     assert not (tmp_path / "data/scheduler/task-summaries").exists()
+
+
+def test_native_table_has_only_three_columns_and_six_task_rows():
+    row = task("index_us", status="partial", summary="omit summary", issues=["omit issue"])
+    row["warnings"] = ["omit warning"]
+    message = build_task_notification(snapshot(row, warnings=["omit global warning"]))
+    blocks = message["rich_message"]["blocks"]
+    assert blocks[0] == {"type": "heading", "size": 3, "text": "每日任务汇总：2026-10-20"}
+    assert len(blocks) == 2 and blocks[1]["type"] == "table"
+    cells = blocks[1]["cells"]
+    assert len(cells) == 7 and all(len(row) == 3 for row in cells)
+    assert [cell["text"] for cell in cells[0]] == ["任务名称", "执行时间", "执行结果"]
+    assert [cell["text"] for cell in cells[1]] == ["index_us", "09:03–09:13", "部分完成"]
+    assert len(message["text"].splitlines()) == 8
+    assert "omit" not in json.dumps(message)
+
+
+@pytest.mark.parametrize(
+    ("status", "label"),
+    [
+        ("failed", "失败"),
+        ("timed_out", "超时"),
+        ("interrupted", "中断"),
+        ("unknown", "待确认"),
+        ("finished", "流程完成"),
+    ],
+)
+def test_short_result_labels_preserve_execution_states(status, label):
+    assert f"index_us｜09:03–09:13｜{label}" in build_task_digest(
+        snapshot(task("index_us", status=status))
+    )
+
+
+def test_running_task_has_real_start_without_inventing_end_time():
+    text = build_task_digest(snapshot(task("index_us", status="running", finished_at=None)))
+    assert "index_us｜09:03 起｜执行中" in text
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"finished_at": "2026-10-20T19:00:00+08:00"},
+        {"finished_at": "2026-10-20T08:00:00+08:00"},
+        {"finished_at": None},
+        {"started_at": "bad"},
+    ],
+)
+def test_inconsistent_completion_times_do_not_claim_success(updates):
+    text = build_task_digest(snapshot(task("erp", status="completed", **updates)))
+    assert "erp｜—｜时间异常，待确认" in text
 
 
 class Client:
@@ -313,6 +367,9 @@ class Client:
             raise error
         return len(self.sent)
 
+    def send_rich(self, chat, rich_message):
+        return self.send(chat, rich_message)
+
     def close(self):
         pass
 
@@ -325,6 +382,65 @@ def collector(root, specs, *, now):
         "text": "ERP无完成回执；指数部分完成",
         "snapshot": snapshot(now=now),
     }
+
+
+def rich_collector(root, specs, *, now):
+    data = snapshot(task("index_us", status="partial"), now=now)
+    return {
+        **collector(root, specs, now=now),
+        "snapshot": data,
+        **build_task_notification(data),
+    }
+
+
+def test_new_daily_send_freezes_table_and_duplicate_does_not_resend(tmp_path):
+    api = Client()
+
+    def delivery(settings, text, path, **kwargs):
+        return deliver(settings, text, path, client_factory=lambda _: api, **kwargs)
+
+    first = send_task_summary(
+        tmp_path, {}, settings(), now=NOW, collector=rich_collector, delivery=delivery
+    )
+    second = send_task_summary(
+        tmp_path,
+        {},
+        settings(),
+        now=NOW + timedelta(hours=1),
+        collector=lambda *_args, **_kwargs: pytest.fail("must use frozen summary"),
+        delivery=delivery,
+    )
+    frozen = json.loads((tmp_path / "data/scheduler/task-summaries/2026-10-20.json").read_text())
+    assert first == second and first["status"] == "sent"
+    assert api.sent == [frozen["rich_message"]]
+    assert frozen["text"] == build_task_digest(frozen["snapshot"])
+
+
+@pytest.mark.parametrize("uncertain,expected_attempts", [(False, 2), (True, 1)])
+def test_rich_retry_preserves_frozen_table_and_does_not_repeat_uncertain_send(
+    tmp_path, uncertain, expected_attempts
+):
+    api = Client(TelegramError("failed", uncertain=uncertain))
+
+    def delivery(settings, text, path, **kwargs):
+        return deliver(settings, text, path, client_factory=lambda _: api, **kwargs)
+
+    first = send_task_summary(
+        tmp_path, {}, settings(), now=NOW, collector=rich_collector, delivery=delivery
+    )
+    assert first["status"] == ("delivery_unknown" if uncertain else "failed")
+    second = send_task_summary(
+        tmp_path,
+        {},
+        settings(),
+        now=NOW + timedelta(days=1),
+        retry_date=date(2026, 10, 20),
+        collector=lambda *_args, **_kwargs: pytest.fail("retry cannot create new summary"),
+        delivery=delivery,
+    )
+    assert len(api.sent) == expected_attempts
+    assert all(message == api.sent[0] for message in api.sent)
+    assert second["status"] == ("delivery_unknown" if uncertain else "sent")
 
 
 def test_duplicate_daily_send_keeps_frozen_evidence_and_never_sends_again(tmp_path):

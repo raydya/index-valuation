@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from index_valuation.domain import IndexSpec
+from index_valuation.erp_results import EXPECTED_ERP_ITEMS
 from index_valuation.scheduled_tasks import (
     MAX_SCHEDULER_SNAPSHOT,
     TASKS,
@@ -540,6 +541,132 @@ def test_corrupt_latest_erp_attempt_supersedes_prior_completed_result(service):
     queue = queued(service)
     completed(service, queue)
     (service.root / "data/scheduler/erp-sheet/last-attempt.json").write_text("invalid")
+    item = task(service, "erp")
+    assert item["last_run"]["status"] == "unknown"
+    assert not item["data_items"]
+
+
+def manual_erp_recovery(service, *, status="partial"):
+    execution = {
+        "schema": "erp_execution_v1",
+        "task": "erp",
+        "mode": "manual_recovery",
+        "execution_origin": "authorized_manual_recovery",
+        "recovery_of_run_id": str(uuid4()),
+        "date": "2026-10-16",
+        "run_id": str(uuid4()),
+        "started_at": "2026-10-16T14:20:00+08:00",
+        "finished_at": "2026-10-16T14:30:00+08:00",
+        "status": status,
+        "exit_code": None,
+        "process_exit_code": None,
+        "summary": "人工恢复，已回读核对。",
+    }
+    receipt = {
+        **execution,
+        "readback_verified": True,
+        "result_text": "保留原失败记录，实际表格已核对。",
+        "issues": ["恒生科技日期未知"] if status == "partial" else [],
+        "data_items": [
+            {
+                "name": name,
+                "date": None if status == "partial" and name == "恒生科技" else "2026-10-15",
+                "complete_date": (
+                    None if status == "partial" and name == "恒生科技" else "2026-10-15"
+                ),
+                "status": "unknown" if status == "partial" and name == "恒生科技" else "available",
+                "note": "保留真实来源日期。",
+            }
+            for name in sorted(EXPECTED_ERP_ITEMS)
+        ],
+    }
+    base = service.root / "data/scheduler/erp-sheet"
+    write_json(base / "last-execution.json", execution)
+    write_json(base / "results/2026-10-16.json", receipt)
+    return base, execution, receipt
+
+
+@pytest.mark.parametrize("status", ["completed", "partial"])
+def test_manual_erp_recovery_uses_verified_business_result_without_process_exit_code(
+    service, status
+):
+    base, execution, _ = manual_erp_recovery(service, status=status)
+    original = {"run_id": execution["recovery_of_run_id"], "status": "failed"}
+    original_path = base / "runs/2026-10-16/state.json"
+    write_json(original_path, original)
+    item = task(service, "erp")
+    assert item["last_run"]["status"] == status
+    assert item["last_run"]["started_at"] == execution["started_at"]
+    assert item["last_run"]["finished_at"] == execution["finished_at"]
+    assert item["last_run"]["exit_code"] is None
+    assert len(item["data_items"]) == 10
+    assert json.loads(original_path.read_text()) == original
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        {"mode": "other"},
+        {"execution_origin": None},
+        {"execution_origin": "scheduled"},
+        {"recovery_of_run_id": None},
+        {"recovery_of_run_id": "not-a-uuid"},
+        {"exit_code": 0},
+        {"process_exit_code": 0},
+        {"finished_at": "2026-10-16T17:00:00+08:00"},
+        {"status": "running", "finished_at": None},
+        "same_run",
+    ],
+)
+def test_manual_erp_recovery_rejects_invalid_execution_identity_or_time(service, damage):
+    base, execution, _ = manual_erp_recovery(service)
+    execution.update(
+        {"recovery_of_run_id": execution["run_id"]} if damage == "same_run" else damage
+    )
+    write_json(base / "last-execution.json", execution)
+    item = task(service, "erp")
+    assert item["last_run"]["status"] == "unknown"
+    assert not item["data_items"]
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "missing",
+        {"run_id": str(uuid4())},
+        {"date": "2026-10-15"},
+        {"mode": "codex_exec"},
+        {"execution_origin": None},
+        {"recovery_of_run_id": str(uuid4())},
+        {"status": "completed"},
+        {"readback_verified": False},
+        {"started_at": "2026-10-16T14:19:00+08:00"},
+        {"finished_at": "2026-10-16T14:31:00+08:00"},
+    ],
+)
+def test_manual_erp_recovery_requires_matching_validated_readback(service, damage):
+    base, _, receipt = manual_erp_recovery(service)
+    path = base / "results/2026-10-16.json"
+    if damage == "missing":
+        path.unlink()
+    else:
+        receipt.update(damage)
+        write_json(path, receipt)
+    item = task(service, "erp")
+    assert item["last_run"]["status"] == "unknown"
+    assert not item["data_items"]
+
+
+@pytest.mark.parametrize("damage", ["missing", "duplicate", "unverified_date"])
+def test_manual_erp_completed_requires_all_ten_verified_targets(service, damage):
+    base, _, receipt = manual_erp_recovery(service, status="completed")
+    if damage == "missing":
+        receipt["data_items"].pop()
+    elif damage == "duplicate":
+        receipt["data_items"][-1] = receipt["data_items"][0]
+    else:
+        receipt["data_items"][0]["complete_date"] = None
+    write_json(base / "results/2026-10-16.json", receipt)
     item = task(service, "erp")
     assert item["last_run"]["status"] == "unknown"
     assert not item["data_items"]
