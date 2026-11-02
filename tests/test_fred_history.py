@@ -3,6 +3,7 @@
 import json
 from dataclasses import replace
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import httpx
@@ -129,3 +130,194 @@ def test_wrong_index_mapping_is_rejected_before_request(tmp_path):
         FredHistory(Archive(tmp_path)).index_history(
             replace(SP, fred_series="NASDAQ100"), date(2020, 1, 1), date(2020, 12, 31)
         )
+
+
+def recent_page(rows, *, series="SP500", frequency="Daily,<br />Close"):
+    observations = "".join(
+        f'<tr><td align="right">{day}:&nbsp;</td>'
+        f'<td class="series-obs value">{value}</td><td>&nbsp;</td></tr>'
+        for day, value in rows
+    )
+    return (
+        f'<html><head><link rel="canonical" href="https://fred.stlouisfed.org/series/{series}">'
+        f'</head><body><span class="series-meta-value-frequency">{frequency}</span>'
+        '<span class="series-meta-updated-date">Oct 30, 2026</span>'
+        f'<table id="recent-obs" class="table table-condensed">{observations}'
+        f'<tr><td colspan=2><a id="viewall-button" href="/data/{series}">'
+        "View All</a></td></tr></table></body></html>"
+    )
+
+
+def test_recent_page_fills_only_actual_missing_dates_and_keeps_csv_priority(tmp_path, monkeypatch):
+    monkeypatch.setattr(f"{__name__}.NOW", datetime(2026, 11, 2, 3, tzinfo=UTC))
+    requested = []
+
+    def handler(request):
+        requested.append(request.url.path)
+        if request.url.path.endswith(".csv"):
+            return httpx.Response(200, text="observation_date,SP500\n2026-10-28,7743.98\n")
+        return httpx.Response(
+            200,
+            text=recent_page(
+                [
+                    ("2026-10-29", "7,720.39"),
+                    ("2026-10-28", "7,743.98"),
+                    ("2026-10-27", "7,722.60"),
+                ]
+            ),
+        )
+
+    client_mock(monkeypatch, handler)
+    batch = FredHistory(Archive(tmp_path)).index_history(SP, date(2026, 10, 28), date(2026, 10, 30))
+    assert requested == ["/graph/fredgraph.csv", "/series/SP500"]
+    assert batch.failures == []
+    assert [(row.trade_date, row.price, row.source) for row in batch.observations] == [
+        (date(2026, 10, 28), Decimal("7743.98"), "fred"),
+        (date(2026, 10, 29), Decimal("7720.39"), "fred"),
+    ]
+    original, supplemented = batch.observations
+    assert original.raw == {"observation_date": "2026-10-28", "SP500": "7743.98"}
+    assert supplemented.quote_at.isoformat() == "2026-10-29T16:15:00-04:00"
+    assert supplemented.raw["retrieval_method"] == "series_recent_observations"
+    payload = json.loads(Path(supplemented.artifact_path).read_text())
+    assert payload["url"] == "https://fred.stlouisfed.org/series/SP500"
+    assert payload["target_date"] == "2026-10-30"
+    assert payload["start"] == "2026-10-28" and payload["end"] == "2026-10-30"
+    assert 'id="recent-obs"' in payload["text"]
+
+
+@pytest.mark.parametrize(
+    "page,error",
+    [
+        (recent_page([("2026-10-29", "7720.39")], series="NASDAQ100"), "identity"),
+        (recent_page([("2026-10-29", "7720.39")], frequency="Weekly, Close"), "frequency"),
+        (recent_page([("2026-10-29", "7720.39")], frequency="Daily, Open"), "frequency"),
+        (recent_page([("2026-10-29", "7720.39")], frequency=""), "frequency"),
+        (recent_page([("2026-02-30", "7720.39")]), "invalid observation date"),
+        (recent_page([("10/29/2026", "7720.39")]), "invalid observation date"),
+        (recent_page([("2026-10-29", "7720.39")] * 2), "duplicate"),
+        (recent_page([("2026-11-02", "7720.39")]), "unfinished"),
+        (recent_page([("2026-10-29", "0")]), "invalid"),
+        (recent_page([("2026-10-29", "-1")]), "invalid"),
+        (recent_page([("2026-10-29", "NaN")]), "invalid"),
+        (recent_page([("2026-10-29", "Infinity")]), "invalid"),
+        (recent_page([("2026-10-29", "77,20.39")]), "invalid"),
+        (recent_page([]), "missing or incomplete"),
+        (recent_page([("2026-10-29", "7720.39")]).replace("</table>", ""), "incomplete"),
+        (
+            recent_page([("2026-10-29", "7720.39")]).replace("fred.stlouisfed.org", "example.org"),
+            "identity",
+        ),
+        (recent_page([("2026-10-29", "7720.39")]).replace('rel="canonical"', "rel"), "identity"),
+        (
+            recent_page([("2026-10-29", "7720.39")]).replace(
+                'class="series-meta-value-frequency"', "class"
+            ),
+            "frequency",
+        ),
+    ],
+)
+def test_invalid_recent_page_preserves_csv(tmp_path, monkeypatch, page, error):
+    monkeypatch.setattr(f"{__name__}.NOW", datetime(2026, 11, 2, 3, tzinfo=UTC))
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            text="observation_date,SP500\n2026-10-28,7743.98\n"
+            if request.url.path.endswith(".csv")
+            else page,
+        )
+
+    client_mock(monkeypatch, handler)
+    batch = FredHistory(Archive(tmp_path)).index_history(SP, date(2026, 10, 28), date(2026, 10, 30))
+    assert [(row.trade_date, row.price) for row in batch.observations] == [
+        (date(2026, 10, 28), Decimal("7743.98"))
+    ]
+    assert len(batch.failures) == 1
+    failure = batch.failures[0]
+    assert failure["category"] == "invalid_data" and error in failure["error"]
+    assert json.loads(Path(failure["artifact_path"]).read_text())["text"] == page
+
+
+def test_recent_page_conflict_reports_both_values_and_keeps_other_missing_dates(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(f"{__name__}.NOW", datetime(2026, 11, 2, 3, tzinfo=UTC))
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            text="observation_date,SP500\n2026-10-28,7743.98\n"
+            if request.url.path.endswith(".csv")
+            else recent_page([("2026-10-29", "7720.39"), ("2026-10-28", "7740.01")]),
+        )
+
+    client_mock(monkeypatch, handler)
+    batch = FredHistory(Archive(tmp_path)).index_history(SP, date(2026, 10, 28), date(2026, 10, 30))
+    assert [(row.trade_date, row.price) for row in batch.observations] == [
+        (date(2026, 10, 28), Decimal("7743.98")),
+        (date(2026, 10, 29), Decimal("7720.39")),
+    ]
+    assert len(batch.failures) == 1
+    failure = batch.failures[0]
+    assert failure["category"] == "same_source_conflict"
+    assert failure["trade_date"] == date(2026, 10, 28)
+    assert failure["csv_value"] == Decimal("7743.98")
+    assert failure["page_value"] == Decimal("7740.01")
+    assert Path(failure["csv_artifact_path"]).exists() and Path(failure["artifact_path"]).exists()
+
+
+@pytest.mark.parametrize("mode", ["http", "connection"])
+def test_failed_recent_request_preserves_csv_and_archives_retrieval(tmp_path, monkeypatch, mode):
+    monkeypatch.setattr(f"{__name__}.NOW", datetime(2026, 11, 2, 3, tzinfo=UTC))
+
+    def handler(request):
+        if request.url.path.endswith(".csv"):
+            return httpx.Response(200, text="observation_date,SP500\n2026-10-28,7743.98\n")
+        if mode == "http":
+            return httpx.Response(503, text="Service unavailable")
+        raise httpx.ConnectError("Connection refused", request=request)
+
+    client_mock(monkeypatch, handler)
+    batch = FredHistory(Archive(tmp_path)).index_history(SP, date(2026, 10, 28), date(2026, 10, 30))
+    assert [row.trade_date for row in batch.observations] == [date(2026, 10, 28)]
+    assert len(batch.failures) == 1 and batch.failures[0]["category"] == "request_failed"
+    payload = json.loads(Path(batch.failures[0]["artifact_path"]).read_text())
+    assert payload["url"] == "https://fred.stlouisfed.org/series/SP500"
+    assert payload["retrieval_method"] == "series_recent_observations"
+    if mode == "http":
+        assert payload["status_code"] == 503 and payload["text"] == "Service unavailable"
+    else:
+        assert "Connection refused" in payload["error"]
+
+
+@pytest.mark.parametrize(
+    "now,start,end,csv",
+    [
+        # Weekend boundaries do not turn Saturday or Sunday into a missing session.
+        ("2026-11-01T12:00:00+00:00", "2026-10-29", "2026-11-01", "2026-10-30,7720.39"),
+        ("2026-11-02T12:00:00+00:00", "2026-10-31", "2026-11-01", ""),
+        # A historical interval outside the recent 14 days never triggers the page.
+        ("2026-11-02T12:00:00+00:00", "2026-10-01", "2026-10-18", "2026-10-01,7720.39"),
+        # Today is not closed; Friday's present close is sufficient on Monday morning.
+        ("2026-11-02T12:00:00+00:00", "2026-10-30", "2026-11-02", "2026-10-30,7720.39"),
+        # Thanksgiving is closed; Wednesday's observation is the target.
+        ("2026-11-26T23:00:00+00:00", "2026-11-25", "2026-11-26", "2026-11-25,7720.39"),
+    ],
+)
+def test_page_not_requested_for_closed_sessions_already_present_or_old_window(
+    tmp_path, monkeypatch, now, start, end, csv
+):
+    monkeypatch.setattr(f"{__name__}.NOW", datetime.fromisoformat(now))
+    requested = []
+
+    def handler(request):
+        requested.append(request.url.path)
+        assert request.url.path.endswith(".csv"), "No missing recent closed session"
+        return httpx.Response(200, text=f"observation_date,SP500\n{csv}\n")
+
+    client_mock(monkeypatch, handler)
+    batch = FredHistory(Archive(tmp_path)).index_history(
+        SP, date.fromisoformat(start), date.fromisoformat(end)
+    )
+    assert requested == ["/graph/fredgraph.csv"] and batch.failures == []

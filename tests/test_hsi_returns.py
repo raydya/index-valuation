@@ -42,9 +42,9 @@ class FixedClock(datetime):
 
 def client_mock(monkeypatch, handler):
     original = httpx.Client
-    monkeypatch.setattr("index_valuation.providers.hsi_returns.datetime", FixedClock)
+    monkeypatch.setattr("index_valuation.providers.hsi_history_base.datetime", FixedClock)
     monkeypatch.setattr(
-        "index_valuation.providers.hsi_returns.httpx.Client",
+        "index_valuation.providers.hsi_history_base.httpx.Client",
         lambda **kwargs: original(transport=httpx.MockTransport(handler)),
     )
 

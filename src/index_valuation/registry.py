@@ -109,6 +109,7 @@ def load_indices(path: Path = Path("indices.toml")) -> dict[str, IndexSpec]:
             "csindex",
             "cnindex",
             "nasdaq",
+            "hsi",
             "yahoo",
             "google",
             "fred",
@@ -127,6 +128,10 @@ def load_indices(path: Path = Path("indices.toml")) -> dict[str, IndexSpec]:
             raise DataError("Invalid or duplicate additional history sources")
         if spec.market != "CN" and {"csindex", "cnindex"}.intersection(sources):
             raise DataError("Mainland reference adapters cannot be used for overseas indices")
+        if "hsi" in sources:
+            from index_valuation.providers.hsi_history import PROFILE
+
+            PROFILE.identity(spec)
         if spec.market == "US" and spec.timezone != "America/New_York":
             raise DataError("US indices require America/New_York for DST-aware trading dates")
         if type(spec.futu_supported) is not bool:
@@ -259,8 +264,8 @@ def load_indices(path: Path = Path("indices.toml")) -> dict[str, IndexSpec]:
             r"[0-9]+\.[A-Za-z0-9]+", spec.eastmoney_secid
         ):
             raise DataError("Invalid Eastmoney security mapping")
-        if spec.market == "HK" and spec.eastmoney_secid is None:
-            raise DataError("HK indices require an explicit Eastmoney security mapping")
+        if spec.market == "HK" and spec.eastmoney_secid is None and "hsi" not in sources:
+            raise DataError("HK indices require an explicit Eastmoney or official HSI mapping")
         if (
             spec.expected_constituents is not None and spec.expected_constituents < 1
         ) or spec.band_min_observations < 2:

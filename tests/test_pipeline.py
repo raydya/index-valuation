@@ -870,6 +870,60 @@ def test_official_priority_rebuild_preserves_legacy_method_and_exports(repositor
     assert row["price_status"] == row["pe_comparison_status"] == "error"
 
 
+def test_hsi_reference_price_restores_futu_eps_without_mixing_total_returns(repository, tmp_path):
+    from index_valuation.index_series import IndexSeries, method_for
+    from index_valuation.models import IndexSeriesRecord
+    from index_valuation.providers.hsi_history import parse_history
+    from index_valuation.registry import load_indices
+
+    spec = replace(load_indices()["hstech"], key="test_hsi", total_return=None)
+    repository.ensure_index(spec)
+    run = repository.start_run(spec, DAY)
+    price = Observation(
+        spec.quote_code, DAY, "futu", Decimal(4000), None, None, NOW, NOW, currency="HKD"
+    )
+    pe = SourceValuation(
+        "futu", spec.quote_code, DAY, "pe", "futu_valuation_pe", Decimal(20), NOW, "futu.json"
+    )
+    repository.save_observations(run, [price])
+    repository.save_source_valuations(run, [pe])
+    series = IndexSeries(repository, tmp_path)
+    assert series.refresh(spec)["latest"]["implied_eps"] is None
+
+    official = parse_history(
+        {
+            "code": "0",
+            "data": [
+                {
+                    "indexCode": "02083.00",
+                    "indexName": "Hang Seng TECH Index",
+                    "valueHistory": [{"date": DAY.isoformat(), "close": "4000.00"}],
+                }
+            ],
+        },
+        spec,
+        DAY,
+        DAY,
+        NOW,
+        "hsi-price.json",
+    )
+    repository.save_observations(run, official.observations)
+    repository.save_observations(run, official.observations)
+    result = series.refresh(spec)
+    current = repository.index_series(spec.key, method_for(spec))[0]
+    assert result["latest_complete_date"] == DAY
+    assert current["price_source"] == current["pe_source"] == "futu"
+    assert current["price_status"] == "pass" and current["implied_eps"] == 200
+    assert current["source_prices"] == {
+        "futu": "4000.0000000000000000",
+        "hsi": "4000.0000000000000000",
+    }
+    assert current["price_artifacts"]["hsi"] == "hsi-price.json"
+    assert count(repository, DailyObservation) == 2
+    assert count(repository, SourceValuationRecord) == count(repository, IndexSeriesRecord) == 1
+    assert not repository.total_return_observations(spec)
+
+
 @pytest.mark.parametrize(
     "key,source_prices,status,legacy_source",
     [

@@ -26,6 +26,7 @@ PRICE_SOURCES = (
     "futorest",
     "csindex",
     "cnindex",
+    "hsi",
     "fred",
     "nasdaq",
     "yahoo",

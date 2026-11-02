@@ -33,6 +33,7 @@ from index_valuation.providers.futu_rest import FutuRestHistory
 from index_valuation.providers.futu_rest_auth import FutuRestClient
 from index_valuation.providers.google_history import GoogleHistory
 from index_valuation.providers.gurufocus_valuation import GuruFocusValuation
+from index_valuation.providers.hsi_history import HSIPriceHistory
 from index_valuation.providers.multpl_valuation import MultplValuation
 from index_valuation.providers.nasdaq_history import NasdaqHistory
 from index_valuation.providers.total_return import TotalReturnSources
@@ -294,6 +295,7 @@ def main(argv: list[str] | None = None) -> int:
                 "csindex": CSIHistory,
                 "cnindex": CNIndexHistory,
                 "nasdaq": NasdaqHistory,
+                "hsi": HSIPriceHistory,
                 "yahoo": YahooHistory,
                 "google": GoogleHistory,
                 "yahooetf": YahooETFValuation,

@@ -118,9 +118,9 @@ quote_code = "HK.800700"
 # 成分数量以供应商发布为准；直接指数估值不依赖成分数量。
 inception_date = 2020-07-27
 history_start_date = 2014-12-31
-historical_price_source = "eastmoney"
-reference_history_source = "none"
-eastmoney_secid = "124.HSTECH"
+historical_price_source = "futu"
+reference_history_source = "hsi"
+hsi_symbol = "02083.00"
 currency = "HKD"
 timezone = "Asia/Hong_Kong"
 # 港股收市竞价最迟在16:10结束；半日市也等此时再采集当日完整数据。

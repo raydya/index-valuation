@@ -74,6 +74,7 @@ class IndexSpec:
     yahoo_proxy_symbol: str | None = None
     google_symbol: str | None = None
     nasdaq_symbol: str | None = None
+    hsi_symbol: str | None = None
     fred_series: str | None = None
     tracking_etfs: tuple[str, ...] = ()
     description: str = ""
